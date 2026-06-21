@@ -7,8 +7,13 @@ const { getState } = require('../db/sessionState');
 const { handleStatefulFlow } = require('../commands/order');
 const { handleInteractiveReply } = require('../commands/interactive');
 const { saveMediaFromMessage } = require('../utils/media');
+const { getFeatures } = require('../db/userFeatures');
 
 const PREFIX = process.env.COMMAND_PREFIX || '!';
+// Don't auto-reply more than once per this many minutes for the same sender,
+// so it doesn't repeat on every message in an ongoing conversation.
+const AUTO_REPLY_COOLDOWN_MS = parseInt(process.env.AUTO_REPLY_COOLDOWN_MINUTES || '60', 10) * 60 * 1000;
+const lastAutoReplyAt = new Map(); // jid -> timestamp, in-memory (resets on restart)
 
 function extractText(msg) {
   const m = msg.message || {};
@@ -82,6 +87,23 @@ function registerMessageHandler(sock) {
           messageType,
           body: text || null,
         });
+
+        // Auto-reply (away message) — only for senders with this feature enabled,
+        // and only once per cooldown window so it doesn't repeat on every message.
+        if (!isGroup) {
+          try {
+            const features = await getFeatures(sender);
+            if (features && features.auto_reply) {
+              const lastSent = lastAutoReplyAt.get(sender) || 0;
+              if (Date.now() - lastSent > AUTO_REPLY_COOLDOWN_MS) {
+                lastAutoReplyAt.set(sender, Date.now());
+                await reply(features.auto_reply_message || "Thanks for your message! I'll reply shortly.");
+              }
+            }
+          } catch (err) {
+            logger.warn({ err, sender }, 'Failed to process auto-reply');
+          }
+        }
 
         // Save incoming media (images/docs/audio sent TO the bot) for later retrieval
         if (['image', 'video', 'audio', 'document'].includes(messageType)) {

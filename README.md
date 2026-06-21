@@ -36,6 +36,10 @@ Postgres.
 - ✅ Status (story) auto-view + optional auto-download
 - ✅ Incoming media auto-saved to `/downloads/incoming`
 - ✅ Broadcast to all known users with rate-limiting (anti-ban delay)
+- ✅ Per-user feature toggles (auto-view, auto-react, auto-reply, scheduled posts, reminders) — managed via text command or interactive menu
+- ✅ Scheduled WhatsApp Status posts at set times (daily)
+- ✅ Recurring and one-time reminders sent to specific users
+- ✅ Auto-reply (away message) for first-time/inactive contacts, with cooldown
 - ✅ Full Postgres persistence: users, message history, command logs, status logs, broadcasts
 - ✅ Health check endpoint for Render (`/health`)
 - ✅ Structured logging (pino)
@@ -99,6 +103,13 @@ Visit `http://localhost:3000/qr` in your browser, scan with WhatsApp
 folder will contain your auth credentials — keep this folder, it's how the
 bot stays logged in.
 
+**Only have one phone?** You don't need a second device to scan a QR code.
+Instead, visit `/pair`, enter the phone number you want to link (digits
+only, with country code), and you'll get a short pairing code. On that same
+phone, go to WhatsApp → Settings → Linked Devices → Link a Device → **Link
+with phone number instead**, and type in the code. No camera or second
+device required.
+
 ### 5. Deploy to Render
 
 - Push this code to a GitHub repo (the `.gitignore` already excludes
@@ -121,6 +132,81 @@ Message your bot's number from another phone:
 - `!order` — try the multi-step flow
 - Post a WhatsApp Status from a contact and check your database's
   `status_log` table — the bot will have auto-viewed it
+
+## Per-user feature toggles, scheduled posts, and reminders
+
+Admins can control specific features **per WhatsApp number**, independent
+of the bot-wide defaults in `.env`. Two ways to do this:
+
+**Text commands:**
+```
+!setfeature <number> <feature> on/off    e.g. !setfeature 254712345678 auto_react on
+!myfeatures <number>                     show current settings for a number
+!setreply <number> <message>             customize that user's auto-reply text
+```
+Available features: `auto_view`, `auto_react`, `auto_reply`, `auto_status_post`, `auto_reminder`
+
+**Interactive menu:**
+```
+!features <number>
+```
+Shows a tappable list — tap any feature to toggle it on/off, with the menu
+refreshing immediately to show the new state.
+
+**Auto-reply** sends an away-message-style response to a user's first
+message (and then again after a cooldown — default 60 minutes, configurable
+via `AUTO_REPLY_COOLDOWN_MINUTES`), if `auto_reply` is enabled for that
+number. Customize the message with `!setreply`.
+
+**Scheduled status posts** (the bot's own WhatsApp Status, posted at a set
+time daily):
+```
+!schedulestatus <HH:MM> <caption>   e.g. !schedulestatus 07:00 Good morning! ☀️
+!liststatusposts
+!cancelstatuspost <id>
+```
+Note: scheduled posts created via command take effect after the next
+restart/deploy (the scheduler loads jobs from the database on startup).
+
+**Reminders** (recurring daily, or one-time) sent to a specific user:
+```
+!remind <number> <HH:MM> <message> [--notifyme]
+!remind <number> <YYYY-MM-DDTHH:MM> <message> [--notifyme]
+!myreminders <number>
+!cancelreminder <id>
+```
+`--notifyme` also pings the admin who created the reminder once it's sent.
+Recurring reminders take effect after the next restart/deploy; one-time
+reminders are checked every minute regardless.
+
+## Admin web dashboard
+
+A password-protected web dashboard at `/dashboard` lets you manage users,
+features, scheduled posts, and reminders from a browser instead of typing
+WhatsApp commands.
+
+**Setup:** set these in your environment (Render dashboard or `.env`):
+```
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=choose-a-strong-password
+SESSION_SECRET=a-long-random-string
+```
+`SESSION_SECRET` should be random and kept secret — it signs your login
+session cookies. Generate one with `openssl rand -hex 32` or any password
+generator. If you don't set it, logins still work but reset on every
+restart/deploy.
+
+**Using it:** visit `https://your-service.onrender.com/dashboard`, log in,
+then:
+- **Users** — browse recent users or look up any number directly
+- **Manage User** page — toggle features (auto-view, auto-react, auto-reply,
+  scheduled posts, reminders), edit their auto-reply message, add/cancel
+  reminders for them
+- **Scheduled Posts** — view, add, or cancel daily WhatsApp Status posts
+
+This is for admin use only — regular WhatsApp users never see or interact
+with this page. Don't share the URL or credentials; anyone who has both can
+control the bot's settings for any user.
 
 ## Customizing
 

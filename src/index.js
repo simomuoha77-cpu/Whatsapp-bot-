@@ -5,6 +5,8 @@ const { startSock } = require('./whatsapp');
 const { registerMessageHandler } = require('./handlers/messageHandler');
 const { registerStatusHandler } = require('./handlers/statusHandler');
 const { createServer } = require('./server');
+const { startSelfPing } = require('./utils/selfPing');
+const { startScheduler } = require('./handlers/scheduler');
 
 async function main() {
   logger.info('Starting WhatsApp bot...');
@@ -20,11 +22,13 @@ async function main() {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     logger.info(`Web server listening on port ${PORT}. Visit /qr to log in, /health to check status.`);
+    startSelfPing();
   });
 
   await startSock((sock) => {
     registerMessageHandler(sock);
     registerStatusHandler(sock);
+    startScheduler(sock);
     logger.info('Bot is fully online and listening for messages.');
   });
 }

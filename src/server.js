@@ -1,12 +1,33 @@
 const express = require('express');
+const session = require('express-session');
 const QRCode = require('qrcode');
 const { getStatus, requestPairingCode } = require('./whatsapp');
+const { createDashboardRoutes } = require('./handlers/dashboard');
+const logger = require('./utils/logger');
 
 function createServer() {
   const app = express();
 
+  if (!process.env.SESSION_SECRET) {
+    logger.warn('SESSION_SECRET is not set — using a generated one that changes on every restart (dashboard logins won\'t persist across deploys). Set SESSION_SECRET in your environment for stable sessions.');
+  }
+
+  app.use(session({
+    secret: process.env.SESSION_SECRET || `dev-secret-${Date.now()}`,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    },
+  }));
+
+  app.use('/dashboard', createDashboardRoutes());
+
   app.get('/', (req, res) => {
-    res.send('WhatsApp bot is running. Visit /qr to scan login QR code, /pair to log in with a phone number instead, or /health for status.');
+    res.send(
+      'WhatsApp bot is running. Visit /qr to scan login QR code, /pair to log in with a phone number instead, /dashboard for the admin panel, or /health for status.'
+    );
   });
 
   app.get('/health', (req, res) => {
@@ -16,14 +37,20 @@ function createServer() {
 
   app.get('/qr', async (req, res) => {
     const { status, qr } = getStatus();
+
     if (status === 'connected') {
       res.send('<h2>✅ Already connected to WhatsApp.</h2>');
       return;
     }
+
     if (!qr) {
-      res.send('<h2>No QR code available right now.</h2><p>Refresh in a few seconds, or use <a href="/pair">/pair</a> to log in with your phone number instead.</p>');
+      res.send(
+        '<h2>No QR code available right now.</h2>' +
+        '<p>Refresh in a few seconds, or use <a href="/pair">/pair</a> to log in with your phone number instead (no second device needed).</p>'
+      );
       return;
     }
+
     try {
       const qrImageDataUrl = await QRCode.toDataURL(qr, { width: 320 });
       res.send(`
@@ -44,10 +71,12 @@ function createServer() {
 
   app.get('/pair', (req, res) => {
     const { status, pairingCode } = getStatus();
+
     if (status === 'connected') {
       res.send('<h2>✅ Already connected to WhatsApp.</h2>');
       return;
     }
+
     if (pairingCode) {
       res.send(`
         <html>
@@ -55,18 +84,25 @@ function createServer() {
           <body style="display:flex;flex-direction:column;align-items:center;font-family:sans-serif;margin-top:40px;">
             <h2>Your pairing code:</h2>
             <h1 style="letter-spacing:4px;">${pairingCode}</h1>
-            <p>On WhatsApp: Settings &rarr; Linked Devices &rarr; Link a Device &rarr; Link with phone number instead<br>then enter this code.</p>
-            <p>This page refreshes every 15 seconds.</p>
+            <p>On the WhatsApp number you're linking:<br>
+              Settings &rarr; Linked Devices &rarr; Link a Device &rarr; Link with phone number instead<br>
+              then enter this code.</p>
+            <p>This page refreshes every 15 seconds. Codes expire after a short time — request a new one below if needed.</p>
+            <form action="/pair" method="get">
+              <input type="hidden" name="reset" value="1" />
+              <button type="submit">Request a new code</button>
+            </form>
           </body>
         </html>
       `);
       return;
     }
+
     res.send(`
       <html>
         <body style="display:flex;flex-direction:column;align-items:center;font-family:sans-serif;margin-top:40px;">
           <h2>Enter the phone number to link</h2>
-          <p>Digits only, with country code (e.g. 254712345678).</p>
+          <p>Use the number that's logging into the bot, digits only, with country code (e.g. 254712345678 — no plus sign, no spaces).</p>
           <form action="/pair/request" method="get">
             <input type="text" name="number" placeholder="254712345678" style="font-size:18px;padding:8px;" required />
             <button type="submit" style="font-size:18px;padding:8px;">Get pairing code</button>
@@ -83,7 +119,11 @@ function createServer() {
       return;
     }
     requestPairingCode(number);
-    res.send('<h3>Requesting pairing code...</h3><meta http-equiv="refresh" content="3;url=/pair">');
+    res.send(
+      '<h3>Requesting pairing code...</h3>' +
+      '<p>Redirecting in 3 seconds. If nothing shows, the bot may already be mid-connection — wait a few seconds and revisit <a href="/pair">/pair</a>.</p>' +
+      '<meta http-equiv="refresh" content="3;url=/pair">'
+    );
   });
 
   return app;

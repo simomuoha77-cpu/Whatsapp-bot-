@@ -96,7 +96,7 @@ function createDashboardRoutes() {
   // --- Users list + search ---
   router.get('/', async (req, res) => {
     const result = await query(
-      `SELECT jid, phone_number, display_name, message_count, is_blocked FROM users WHERE jid NOT LIKE '%@g.us' ORDER BY last_seen_at DESC LIMIT 100`
+      'SELECT jid, phone_number, display_name, message_count, is_blocked FROM users ORDER BY last_seen_at DESC LIMIT 100'
     );
     const rows = result.rows
       .map(
