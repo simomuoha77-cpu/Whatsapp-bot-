@@ -1,6 +1,6 @@
 const express = require('express');
 const QRCode = require('qrcode');
-const { getStatus } = require('../whatsapp');
+const { getStatus } = require('./whatsapp');
 
 function createServer() {
   const app = express();

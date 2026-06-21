@@ -9,7 +9,7 @@ const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const path = require('path');
 const qrcodeTerminal = require('qrcode-terminal');
-const logger = require('../utils/logger');
+const logger = require('./utils/logger');
 const NodeCache = require('node-cache');
 
 const SESSION_DIR = path.join(__dirname, '..', '..', 'session');
