@@ -12,7 +12,7 @@ const qrcodeTerminal = require('qrcode-terminal');
 const logger = require('./utils/logger');
 const NodeCache = require('node-cache');
 
-const SESSION_DIR = path.join(__dirname, '..', 'session');
+const SESSION_DIR = path.join(__dirname, '..', '..', 'session');
 
 const baileysLogger = pino({ level: 'silent' });
 const msgRetryCounterCache = new NodeCache();
@@ -20,7 +20,7 @@ const msgRetryCounterCache = new NodeCache();
 let sock = null;
 let latestQr = null;
 let latestPairingCode = null;
-let connectionStatus = 'disconnected';
+let connectionStatus = 'disconnected'; // disconnected | connecting | qr_pending | connected
 let pendingPairingNumber = null;
 
 async function startSock(onReady) {
@@ -45,16 +45,17 @@ async function startSock(onReady) {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
+    // If a pairing code was requested via the web endpoint, fire it once we're "connecting"
     if (connection === 'connecting' && pendingPairingNumber && !sock.authState.creds.registered) {
       try {
         const code = await sock.requestPairingCode(pendingPairingNumber);
         latestPairingCode = code;
         connectionStatus = 'pairing_code_pending';
-        logger.info(`Pairing code: ${code}`);
+        logger.info(`Pairing code: ${code} — enter this in WhatsApp > Linked Devices > Link with phone number`);
       } catch (err) {
         logger.error({ err }, 'Failed to generate pairing code');
       } finally {
-        pendingPairingNumber = null;
+        pendingPairingNumber = null; // only request once per connection attempt
       }
     }
 
@@ -90,8 +91,14 @@ async function startSock(onReady) {
   return sock;
 }
 
+/**
+ * Requests a pairing code for the given phone number (digits only, with country code).
+ * Call this once you have an active socket attempting to connect.
+ */
 function requestPairingCode(phoneNumber) {
   pendingPairingNumber = phoneNumber;
+  // If socket already exists and isn't registered, try immediately too,
+  // in case we're already past the 'connecting' event.
   if (sock && !sock.authState?.creds?.registered) {
     sock.requestPairingCode(phoneNumber).then((code) => {
       latestPairingCode = code;

@@ -37,15 +37,15 @@ register('unblock', {
 });
 
 register('reactmap', {
-  description: 'Show the keyword to emoji map (admin only)',
+  description: 'Show the keyword → emoji map used for auto-reacting to statuses (admin only)',
   adminOnly: true,
   handler: async ({ reply }) => {
     const { KEYWORD_EMOJI_MAP, DEFAULT_EMOJI } = require('../utils/statusEmoji');
-    let text = '*Status Auto-React Map*\n\n';
+    let text = `*Status Auto-React Map*\n\n`;
     for (const { keywords, emoji } of KEYWORD_EMOJI_MAP) {
-      text += emoji + ' — ' + keywords.join(', ') + '\n';
+      text += `${emoji} — ${keywords.join(', ')}\n`;
     }
-    text += '\nDefault: ' + DEFAULT_EMOJI;
+    text += `\nDefault (no match / no caption): ${DEFAULT_EMOJI}`;
     await reply(text);
   },
 });
