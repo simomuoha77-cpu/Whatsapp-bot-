@@ -12,14 +12,16 @@ const qrcodeTerminal = require('qrcode-terminal');
 const logger = require('./utils/logger');
 const NodeCache = require('node-cache');
 
-const SESSION_DIR = path.join(__dirname, '..', '..', 'session');
+const SESSION_DIR = path.join(__dirname, '..', 'session');
 
 const baileysLogger = pino({ level: 'silent' });
 const msgRetryCounterCache = new NodeCache();
 
 let sock = null;
 let latestQr = null;
-let connectionStatus = 'disconnected'; // disconnected | connecting | qr_pending | connected
+let latestPairingCode = null;
+let connectionStatus = 'disconnected';
+let pendingPairingNumber = null;
 
 async function startSock(onReady) {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -40,10 +42,23 @@ async function startSock(onReady) {
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    if (connection === 'connecting' && pendingPairingNumber && !sock.authState.creds.registered) {
+      try {
+        const code = await sock.requestPairingCode(pendingPairingNumber);
+        latestPairingCode = code;
+        connectionStatus = 'pairing_code_pending';
+        logger.info(`Pairing code: ${code}`);
+      } catch (err) {
+        logger.error({ err }, 'Failed to generate pairing code');
+      } finally {
+        pendingPairingNumber = null;
+      }
+    }
+
+    if (qr && !pendingPairingNumber) {
       latestQr = qr;
       connectionStatus = 'qr_pending';
       logger.info('Scan this QR code with WhatsApp (Linked Devices):');
@@ -53,6 +68,7 @@ async function startSock(onReady) {
     if (connection === 'open') {
       connectionStatus = 'connected';
       latestQr = null;
+      latestPairingCode = null;
       logger.info('WhatsApp connection established.');
       if (onReady) onReady(sock);
     }
@@ -63,7 +79,7 @@ async function startSock(onReady) {
       const loggedOut = statusCode === DisconnectReason.loggedOut;
 
       if (loggedOut) {
-        logger.error('Session logged out. Delete the /session folder and re-scan the QR code to log in again.');
+        logger.error('Session logged out. Delete the /session folder and log in again.');
       } else {
         logger.warn({ statusCode }, 'Connection closed, reconnecting in 3s...');
         setTimeout(() => startSock(onReady), 3000);
@@ -74,12 +90,23 @@ async function startSock(onReady) {
   return sock;
 }
 
+function requestPairingCode(phoneNumber) {
+  pendingPairingNumber = phoneNumber;
+  if (sock && !sock.authState?.creds?.registered) {
+    sock.requestPairingCode(phoneNumber).then((code) => {
+      latestPairingCode = code;
+      connectionStatus = 'pairing_code_pending';
+      pendingPairingNumber = null;
+    }).catch((err) => logger.error({ err }, 'Failed to generate pairing code (immediate attempt)'));
+  }
+}
+
 function getSock() {
   return sock;
 }
 
 function getStatus() {
-  return { status: connectionStatus, qr: latestQr };
+  return { status: connectionStatus, qr: latestQr, pairingCode: latestPairingCode };
 }
 
-module.exports = { startSock, getSock, getStatus };
+module.exports = { startSock, getSock, getStatus, requestPairingCode };
