@@ -179,6 +179,35 @@ restart/deploy (the scheduler loads jobs from the database on startup).
 Recurring reminders take effect after the next restart/deploy; one-time
 reminders are checked every minute regardless.
 
+## Admin web dashboard
+
+A password-protected web dashboard at `/dashboard` lets you manage users,
+features, scheduled posts, and reminders from a browser instead of typing
+WhatsApp commands.
+
+**Setup:** set these in your environment (Render dashboard or `.env`):
+```
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=choose-a-strong-password
+SESSION_SECRET=a-long-random-string
+```
+`SESSION_SECRET` should be random and kept secret — it signs your login
+session cookies. Generate one with `openssl rand -hex 32` or any password
+generator. If you don't set it, logins still work but reset on every
+restart/deploy.
+
+**Using it:** visit `https://your-service.onrender.com/dashboard`, log in,
+then:
+- **Users** — browse recent users or look up any number directly
+- **Manage User** page — toggle features (auto-view, auto-react, auto-reply,
+  scheduled posts, reminders), edit their auto-reply message, add/cancel
+  reminders for them
+- **Scheduled Posts** — view, add, or cancel daily WhatsApp Status posts
+
+This is for admin use only — regular WhatsApp users never see or interact
+with this page. Don't share the URL or credentials; anyone who has both can
+control the bot's settings for any user.
+
 ## Customizing
 
 - Add new commands: create a file in `src/commands/`, call

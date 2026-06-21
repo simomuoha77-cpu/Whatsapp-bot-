@@ -1,13 +1,32 @@
 const express = require('express');
+const session = require('express-session');
 const QRCode = require('qrcode');
 const { getStatus, requestPairingCode } = require('./whatsapp');
+const { createDashboardRoutes } = require('./handlers/dashboard');
+const logger = require('./utils/logger');
 
 function createServer() {
   const app = express();
 
+  if (!process.env.SESSION_SECRET) {
+    logger.warn('SESSION_SECRET is not set — using a generated one that changes on every restart (dashboard logins won\'t persist across deploys). Set SESSION_SECRET in your environment for stable sessions.');
+  }
+
+  app.use(session({
+    secret: process.env.SESSION_SECRET || `dev-secret-${Date.now()}`,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    },
+  }));
+
+  app.use('/dashboard', createDashboardRoutes());
+
   app.get('/', (req, res) => {
     res.send(
-      'WhatsApp bot is running. Visit /qr to scan login QR code, /pair to log in with a phone number instead, or /health for status.'
+      'WhatsApp bot is running. Visit /qr to scan login QR code, /pair to log in with a phone number instead, /dashboard for the admin panel, or /health for status.'
     );
   });
 
