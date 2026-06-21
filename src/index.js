@@ -1,3 +1,12 @@
+const fs = require('fs');
+console.log('--- DEBUG: __dirname is ---', __dirname);
+console.log('--- DEBUG: contents of src/ ---', fs.readdirSync(__dirname));
+try {
+  console.log('--- DEBUG: contents of src/utils/ ---', fs.readdirSync(__dirname + '/utils'));
+} catch (e) {
+  console.log('--- DEBUG: could not read src/utils/ ---', e.message);
+}
+
 require('dotenv').config();
 const logger = require('./utils/logger');
 const { runMigrations } = require('./db/migrate');
