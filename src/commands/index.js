@@ -7,7 +7,5 @@ require('./moderation');
 require('./order');
 require('./faq');
 require('./media');
-require('./features');
-require('./scheduling');
 
 module.exports = require('./registry');
