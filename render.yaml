@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: whatsapp-bot
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_NUMBERS
+        sync: false
+      - key: COMMAND_PREFIX
+        value: "!"
+      - key: BOT_NAME
+        value: MyBot
+      - key: AUTO_VIEW_STATUS
+        value: "true"
+      - key: AUTO_DOWNLOAD_STATUS
+        value: "false"
+      - key: BROADCAST_DELAY_MS
+        value: "2000"
+    disk:
+      name: whatsapp-session
+      mountPath: /opt/render/project/src/session
+      sizeGB: 1
+
+databases:
+  - name: whatsapp-bot-db
+    plan: free
