@@ -8,6 +8,8 @@ const logger = require('./utils/logger');
 function createServer() {
   const app = express();
 
+  app.set('trust proxy', 1);
+
   if (!process.env.SESSION_SECRET) {
     logger.warn('SESSION_SECRET is not set — using a generated one that changes on every restart (dashboard logins won\'t persist across deploys). Set SESSION_SECRET in your environment for stable sessions.');
   }
@@ -18,6 +20,7 @@ function createServer() {
     saveUninitialized: false,
     cookie: {
       secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
     },
   }));
