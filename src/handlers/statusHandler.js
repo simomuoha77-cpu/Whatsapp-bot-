@@ -7,6 +7,24 @@ const STATUS_JID = 'status@broadcast';
 const REACT_DELAY_MIN_MS = parseInt(process.env.STATUS_REACT_DELAY_MIN_MS || '1500', 10);
 const REACT_DELAY_MAX_MS = parseInt(process.env.STATUS_REACT_DELAY_MAX_MS || '5000', 10);
 
+const processedStatusIds = new Map();
+const DEDUPE_TTL_MS = 10 * 60 * 1000;
+
+function cleanupOldEntries() {
+  const now = Date.now();
+  for (const [key, ts] of processedStatusIds) {
+    if (now - ts > DEDUPE_TTL_MS) processedStatusIds.delete(key);
+  }
+}
+setInterval(cleanupOldEntries, 60 * 1000);
+
+function alreadyProcessed(botId, statusId) {
+  const key = botId + ':' + statusId;
+  if (processedStatusIds.has(key)) return true;
+  processedStatusIds.set(key, Date.now());
+  return false;
+}
+
 function getMessageType(msg) {
   const keys = Object.keys(msg.message || {});
   return keys.find((k) =>
@@ -39,17 +57,14 @@ async function reactToStatus(sock, msg, caption) {
   return emoji;
 }
 
-/**
- * Registers status (story) handling for one specific bot's socket.
- * Whether it views/reacts at all is controlled entirely by that bot's
- * own feature row — this is exactly the "client only wants auto-status-
- * viewing" control surface.
- */
 function registerStatusHandler(sock, botId) {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       if (msg.key?.remoteJid !== STATUS_JID) continue;
       if (!msg.message) continue;
+      if (!msg.key.id) continue;
+
+      if (alreadyProcessed(botId, msg.key.id)) continue;
 
       const contactJid = msg.key.participant || msg.key.remoteJid;
       const messageType = getMessageType(msg);
@@ -73,8 +88,8 @@ function registerStatusHandler(sock, botId) {
 
       if (features.auto_react_status) {
         reactToStatus(sock, msg, caption)
-          .then((emoji) => logger.info({ botId, contactJid, emoji }, 'Reacted to status'))
-          .catch((err) => logger.warn({ err, botId, contactJid }, 'Failed to react to status'));
+          .then((emoji) => logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status'))
+          .catch((err) => logger.warn({ err, botId, contactJid, statusId: msg.key.id }, 'Failed to react to status'));
       }
 
       try {
