@@ -53,12 +53,7 @@ function randomDelay(min, max) {
 async function reactToStatus(sock, msg, caption) {
   const emoji = pickEmojiForCaption(caption);
   await randomDelay(REACT_DELAY_MIN_MS, REACT_DELAY_MAX_MS);
-  const posterJid = msg.key.participant || msg.key.remoteJid;
-  await sock.sendMessage(
-    STATUS_JID,
-    { react: { text: emoji, key: msg.key } },
-    { statusJidList: [posterJid, sock.user?.id].filter(Boolean) }
-  );
+  await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } });
   return emoji;
 }
 
