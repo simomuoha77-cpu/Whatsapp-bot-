@@ -16,11 +16,11 @@ client connects their own WhatsApp number and never sees your admin panel.
    instance. Watch your memory usage as you onboard more clients.
 3. **Render's free Postgres expires after 30 days** and has a 1GB cap —
    fine to start, but plan to upgrade for real client data.
-4. **Session persistence**: each client's WhatsApp login lives in
-   `sessions/<slug>/`. On Render's free tier (no persistent disk), this
-   folder can be wiped on restart/redeploy, meaning clients would need to
-   reconnect. For a real paying client base, add a persistent disk (paid
-   Render plan) or migrate session storage to the database.
+4. **Sessions persist across deploys.** Unlike the filesystem (which
+   Render's free tier wipes on every deploy/restart), each client's
+   WhatsApp login credentials are stored in the `bot_auth_state` table in
+   Postgres. This means pushing new code does **not** force clients to
+   rescan/reconnect — sessions survive deploys automatically.
 
 ## How it works
 

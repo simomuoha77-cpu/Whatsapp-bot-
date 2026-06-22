@@ -122,6 +122,18 @@ CREATE TABLE IF NOT EXISTS reminders (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Stores each bot's WhatsApp login credentials (the Baileys "auth state"),
+-- so sessions survive deploys/restarts on Render's free tier, which wipes
+-- the filesystem on every deploy but persists Postgres data.
+CREATE TABLE IF NOT EXISTS bot_auth_state (
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  key_type TEXT NOT NULL,   -- 'creds' for the single creds object, or a Baileys key category name
+  key_id TEXT NOT NULL DEFAULT '',  -- empty for 'creds', otherwise the specific key id
+  value TEXT,               -- JSON-serialized via Baileys' BufferJSON, or NULL to mean "deleted"
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (bot_id, key_type, key_id)
+);
+
 -- Platform admin (you) login for the master dashboard. Single row in practice,
 -- but modeled as a table in case you ever want more than one admin login.
 CREATE TABLE IF NOT EXISTS platform_admins (

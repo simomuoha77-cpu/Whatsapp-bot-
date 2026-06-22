@@ -250,7 +250,7 @@ function createAdminRoutes() {
     // so the client must reconnect — used if a link leaked or needs revoking.
     const botId = parseInt(req.params.id, 10);
     const bot = await getBotById(botId);
-    await deleteBotSession(botId, bot.slug);
+    await deleteBotSession(botId);
     const crypto = require('crypto');
     const { query } = require('../db/pool');
     const newSlug = crypto.randomBytes(6).toString('hex');
@@ -305,7 +305,7 @@ function createAdminRoutes() {
   router.post('/bot/:id/delete', async (req, res) => {
     const botId = parseInt(req.params.id, 10);
     const bot = await getBotById(botId);
-    if (bot) await deleteBotSession(botId, bot.slug);
+    if (bot) await deleteBotSession(botId);
     await deleteBot(botId);
     res.redirect('/admin');
   });

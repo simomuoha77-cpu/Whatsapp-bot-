@@ -7,8 +7,14 @@ const STATUS_JID = 'status@broadcast';
 const REACT_DELAY_MIN_MS = parseInt(process.env.STATUS_REACT_DELAY_MIN_MS || '1500', 10);
 const REACT_DELAY_MAX_MS = parseInt(process.env.STATUS_REACT_DELAY_MAX_MS || '5000', 10);
 
-const processedStatusIds = new Map();
-const DEDUPE_TTL_MS = 10 * 60 * 1000;
+// Baileys can redeliver the same status update multiple times (retries,
+// multi-device sync, etc.). Without deduplication, the bot would react to
+// the same status over and over in a tight loop — which is both spammy
+// and a strong signal to WhatsApp's anti-abuse systems. We track which
+// status IDs we've already handled, per bot, and skip repeats.
+// Capped and periodically cleared so this doesn't grow forever.
+const processedStatusIds = new Map(); // key: `${botId}:${statusId}` -> timestamp
+const DEDUPE_TTL_MS = 10 * 60 * 1000; // forget after 10 minutes
 
 function cleanupOldEntries() {
   const now = Date.now();
@@ -19,7 +25,7 @@ function cleanupOldEntries() {
 setInterval(cleanupOldEntries, 60 * 1000);
 
 function alreadyProcessed(botId, statusId) {
-  const key = botId + ':' + statusId;
+  const key = `${botId}:${statusId}`;
   if (processedStatusIds.has(key)) return true;
   processedStatusIds.set(key, Date.now());
   return false;
@@ -57,6 +63,12 @@ async function reactToStatus(sock, msg, caption) {
   return emoji;
 }
 
+/**
+ * Registers status (story) handling for one specific bot's socket.
+ * Whether it views/reacts at all is controlled entirely by that bot's
+ * own feature row — this is exactly the "client only wants auto-status-
+ * viewing" control surface.
+ */
 function registerStatusHandler(sock, botId) {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
@@ -64,6 +76,7 @@ function registerStatusHandler(sock, botId) {
       if (!msg.message) continue;
       if (!msg.key.id) continue;
 
+      // Skip if we've already handled this exact status update for this bot.
       if (alreadyProcessed(botId, msg.key.id)) continue;
 
       const contactJid = msg.key.participant || msg.key.remoteJid;

@@ -1,20 +1,15 @@
 const {
   default: makeWASocket,
-  useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
-const path = require('path');
-const fs = require('fs');
 const NodeCache = require('node-cache');
 const logger = require('./logger');
 const { query } = require('../db/pool');
-
-const SESSIONS_ROOT = path.join(__dirname, '..', '..', 'sessions');
-if (!fs.existsSync(SESSIONS_ROOT)) fs.mkdirSync(SESSIONS_ROOT, { recursive: true });
+const { usePostgresAuthState, clearPostgresAuthState } = require('./postgresAuthState');
 
 const baileysLogger = pino({ level: 'silent' });
 
@@ -23,10 +18,6 @@ const baileysLogger = pino({ level: 'silent' });
  * Each entry: { sock, status, qr, pairingCode, slug, pendingPairingNumber }
  */
 const activeBots = new Map();
-
-function sessionDir(slug) {
-  return path.join(SESSIONS_ROOT, slug);
-}
 
 function getBotState(botId) {
   return activeBots.get(botId) || null;
@@ -50,12 +41,12 @@ async function updateBotStatusInDb(botId, status, extra = {}) {
 
 /**
  * Starts (or restarts) a Baileys connection for a single bot/client.
- * onMessageHandlers receives (sock, botId) once connected, so the caller
- * can attach message/status handlers scoped to this specific bot.
+ * Auth credentials are stored in Postgres (not the filesystem), so
+ * connected clients stay logged in across deploys/restarts on Render's
+ * free tier, which wipes the filesystem but persists database data.
  */
 async function startBotSocket(botId, slug, onReady) {
-  const dir = sessionDir(slug);
-  const { state, saveCreds } = await useMultiFileAuthState(dir);
+  const { state, saveCreds } = await usePostgresAuthState(botId);
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -134,6 +125,7 @@ async function startBotSocket(botId, slug, onReady) {
       if (loggedOut) {
         logger.warn({ botId }, 'Bot logged out — needs a new QR/pairing code to reconnect.');
         activeBots.delete(botId);
+        await clearPostgresAuthState(botId);
       } else {
         logger.warn({ botId, statusCode }, 'Bot disconnected, reconnecting in 3s...');
         setTimeout(() => startBotSocket(botId, slug, onReady), 3000);
@@ -161,6 +153,8 @@ function requestPairingCodeForBot(botId, phoneNumber) {
 /**
  * Loads every non-deleted bot from the database and starts a socket for each.
  * Called once on server startup. onReady is invoked per-bot once it connects.
+ * Because credentials live in Postgres, already-connected clients reconnect
+ * automatically without needing to rescan anything.
  */
 async function startAllBots(onReady) {
   const result = await query('SELECT id, slug, status FROM bots');
@@ -172,12 +166,9 @@ async function startAllBots(onReady) {
   logger.info({ count: result.rows.length }, 'Started sockets for all existing bots');
 }
 
-async function deleteBotSession(botId, slug) {
+async function deleteBotSession(botId) {
   activeBots.delete(botId);
-  const dir = sessionDir(slug);
-  if (fs.existsSync(dir)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  await clearPostgresAuthState(botId);
 }
 
 module.exports = {
