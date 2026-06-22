@@ -2,7 +2,6 @@ const pino = require('pino');
 
 let logger;
 try {
-  // Use pretty logs locally if pino-pretty is installed; never required in production.
   if (process.env.NODE_ENV !== 'production') {
     require.resolve('pino-pretty');
     logger = pino({

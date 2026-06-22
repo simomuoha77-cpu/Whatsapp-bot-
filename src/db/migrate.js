@@ -11,9 +11,6 @@ async function runMigrations() {
     logger.info('Running database migrations...');
     await client.query(sql);
     logger.info('Migrations applied successfully.');
-  } catch (err) {
-    logger.error({ err }, 'Migration failed');
-    throw err;
   } finally {
     client.release();
   }

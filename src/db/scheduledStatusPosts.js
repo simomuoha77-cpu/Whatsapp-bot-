@@ -1,10 +1,10 @@
 const { query } = require('./pool');
 
-async function createScheduledStatusPost({ createdBy, cronExpression, caption, mediaPath }) {
+async function createScheduledStatusPost({ botId, cronExpression, caption, mediaPath }) {
   const res = await query(
-    `INSERT INTO scheduled_status_posts (created_by, cron_expression, caption, media_path)
+    `INSERT INTO scheduled_status_posts (bot_id, cron_expression, caption, media_path)
      VALUES ($1, $2, $3, $4) RETURNING *`,
-    [createdBy, cronExpression, caption || null, mediaPath || null]
+    [botId, cronExpression, caption || null, mediaPath || null]
   );
   return res.rows[0];
 }
@@ -14,8 +14,11 @@ async function getActiveScheduledStatusPosts() {
   return res.rows;
 }
 
-async function getAllScheduledStatusPosts() {
-  const res = await query('SELECT * FROM scheduled_status_posts ORDER BY created_at DESC');
+async function getScheduledStatusPostsForBot(botId) {
+  const res = await query(
+    'SELECT * FROM scheduled_status_posts WHERE bot_id = $1 ORDER BY created_at DESC',
+    [botId]
+  );
   return res.rows;
 }
 
@@ -30,7 +33,7 @@ async function markScheduledStatusPostRun(id) {
 module.exports = {
   createScheduledStatusPost,
   getActiveScheduledStatusPosts,
-  getAllScheduledStatusPosts,
+  getScheduledStatusPostsForBot,
   deactivateScheduledStatusPost,
   markScheduledStatusPostRun,
 };

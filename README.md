@@ -1,231 +1,113 @@
-# WhatsApp Bot (Baileys + Postgres + Render)
+# WhatsApp Bot Platform (Multi-Tenant)
 
-A complete, self-hosted WhatsApp bot. Connects to your real WhatsApp account
-(no Meta Business approval needed), supports commands, menus, buttons, status
-(story) viewing, broadcasts, multi-step flows, and persists everything to
-Postgres.
+A platform for running and selling WhatsApp bots to multiple clients from
+one deployment. You manage everything from a single admin dashboard; each
+client connects their own WhatsApp number and never sees your admin panel.
 
 ## ⚠️ Read this before you deploy
 
-1. **This uses an unofficial library (Baileys).** It automates WhatsApp by
-   pretending to be a linked device (like WhatsApp Web). It is **not**
-   endorsed by Meta/WhatsApp, and accounts that send a lot of automated
-   messages — especially unsolicited broadcasts — can get **banned**.
-   Use a spare number, not your primary one, especially while testing.
-2. **Render's free plan spins your service down when idle** and does **not**
-   include a persistent disk on the free tier. That matters because Baileys
-   stores your login session in the `session/` folder — if that folder is
-   wiped, you'll need to re-scan the QR code. Practical options:
-   - Upgrade to a paid Render instance + add a persistent disk (configured in
-     `render.yaml`), so the session folder survives restarts/deploys.
-   - Or accept that on the free tier you may need to rescan the QR
-     periodically (after deploys or spin-downs).
-3. **Status viewing** marks stories as "seen" by your account — the people
-   whose status you view will see you as a viewer, exactly like opening
-   their story manually.
+1. **Unofficial library (Baileys).** Each client bot automates a real
+   WhatsApp account. Accounts that send heavy automated traffic can be
+   banned by WhatsApp/Meta — make sure clients understand this risk before
+   connecting their main number.
+2. **Memory matters.** Each connected client bot is a live WebSocket
+   connection held in memory. Render's free tier (512MB RAM) can likely
+   handle a handful of clients before you need to upgrade to a paid
+   instance. Watch your memory usage as you onboard more clients.
+3. **Render's free Postgres expires after 30 days** and has a 1GB cap —
+   fine to start, but plan to upgrade for real client data.
+4. **Session persistence**: each client's WhatsApp login lives in
+   `sessions/<slug>/`. On Render's free tier (no persistent disk), this
+   folder can be wiped on restart/redeploy, meaning clients would need to
+   reconnect. For a real paying client base, add a persistent disk (paid
+   Render plan) or migrate session storage to the database.
 
-## Features included
+## How it works
 
-- ✅ Real WhatsApp connection via QR login (web page at `/qr`, no terminal needed)
-- ✅ Auto-reconnect on disconnects, session persistence
-- ✅ Command system with prefix (`!menu`, `!ping`, `!info`, etc.)
-- ✅ Admin-only commands (broadcast, block/unblock, whois, stats)
-- ✅ Interactive buttons and list menus (`!options`, `!catalog`)
-- ✅ Multi-step conversation flow example (`!order`)
-- ✅ FAQ/keyword auto-replies (`!faq`)
-- ✅ Status (story) auto-view + optional auto-download
-- ✅ Incoming media auto-saved to `/downloads/incoming`
-- ✅ Broadcast to all known users with rate-limiting (anti-ban delay)
-- ✅ Per-user feature toggles (auto-view, auto-react, auto-reply, scheduled posts, reminders) — managed via text command or interactive menu
-- ✅ Scheduled WhatsApp Status posts at set times (daily)
-- ✅ Recurring and one-time reminders sent to specific users
-- ✅ Auto-reply (away message) for first-time/inactive contacts, with cooldown
-- ✅ Full Postgres persistence: users, message history, command logs, status logs, broadcasts
-- ✅ Health check endpoint for Render (`/health`)
-- ✅ Structured logging (pino)
+- **You** log into `/admin` with your own platform credentials.
+- From there, click **"Create Client Bot"** — this generates a new bot
+  record and a unique onboarding link like `yourapp.onrender.com/connect/abc123`.
+- **Send that link to your client.** They open it on their phone, scan a QR
+  code (or use a pairing code), and their WhatsApp account connects to
+  their own bot instance — they never see or need your admin login.
+- Back in `/admin`, click into that client's bot to:
+  - Toggle exactly which features are active (auto status viewing, auto
+    react, auto reply, scheduled status posts, reminders, commands,
+    broadcast) — if a client only paid for "auto status viewing," turn
+    everything else off.
+  - See their recent contacts.
+  - Set up scheduled status posts or reminders on their behalf.
+  - Regenerate their onboarding link (revokes the old one) or delete the
+    client entirely.
 
 ## Project structure
 
 ```
 src/
-  index.js                 - entry point, wires everything together
-  whatsapp.js               - Baileys connection, QR, reconnect logic
-  server.js                 - Express server (health check + QR web page)
+  index.js                  - entry point: migrations, server, loads all bots, starts scheduler
+  server.js                 - Express app wiring sessions + route mounting
   db/
-    pool.js                 - Postgres connection pool
-    schema.sql               - table definitions
-    migrate.js               - runs schema.sql on startup
-    users.js, messages.js, sessionState.js, broadcasts.js, logs.js
-  handlers/
-    messageHandler.js        - routes every incoming message
-    statusHandler.js          - handles status/story updates
-  commands/
-    registry.js               - command registration system
-    menu.js, info.js, interactive.js, broadcast.js,
-    moderation.js, order.js, faq.js, media.js
+    pool.js, migrate.js, schema.sql
+    bots.js                 - core tenant table (one row per client)
+    botFeatures.js          - per-client feature toggles
+    contacts.js             - contacts, scoped per bot_id
+    messages.js, sessionState.js, logs.js, broadcasts.js
+    scheduledStatusPosts.js, reminders.js
   utils/
-    logger.js, media.js
+    botManager.js            - holds every live Baileys socket in memory, keyed by bot_id
+    platformAuth.js           - YOUR login (not client-facing)
+    statusEmoji.js, logger.js
+  handlers/
+    admin.js                  - YOUR dashboard: create/manage all clients
+    onboarding.js              - client-facing QR/pairing connect page
+    botStartHook.js             - attaches message/status handlers to any newly connected bot
+    messageHandler.js, statusHandler.js  - per-bot, read that bot's own feature flags
+    scheduler.js                - cron jobs across all bots' scheduled posts/reminders
+  commands/
+    registry.js, basic.js, interactive.js, broadcast.js, order.js
 ```
 
 ## Setup
 
-### 1. Install dependencies locally (to test before deploying)
+1. `cp .env.example .env` and fill in `DATABASE_URL`, `PLATFORM_ADMIN_USERNAME`,
+   `PLATFORM_ADMIN_PASSWORD`, `SESSION_SECRET`.
+2. `npm install`
+3. `npm start`
+4. Visit `http://localhost:3000/admin`, log in, create your first client bot.
+5. Open the onboarding link it gives you (as if you were the client) and
+   scan/pair to confirm the whole flow works end to end.
 
-```bash
-npm install
-```
+## Deploying to Render
 
-### 2. Create a Postgres database on Render
+Same as a normal Node web service:
+- Build command: `npm install`
+- Start command: `npm start`
+- Set the env vars above in Render's dashboard
+- Once live, `/admin` is your control panel; share `/connect/<slug>` links
+  with clients as you create them
 
-- Render dashboard → New → PostgreSQL → free plan is fine to start
-- Copy the **Internal Database URL** (if bot and DB are both on Render) or
-  **External Database URL** (if testing locally)
+## Feature toggles, explained
 
-### 3. Configure environment variables
+Each client bot has these independent on/off switches:
+- **Auto Status Viewing** — marks contacts' WhatsApp Status as seen automatically
+- **Auto Status Reacting** — reacts to statuses with an emoji based on caption keywords
+- **Auto Reply** — sends an away-message-style reply to first-time/returning contacts (with a cooldown)
+- **Auto Status Posting** — the bot posts its own scheduled WhatsApp Status updates
+- **Auto Reminders** — scheduled messages sent to specific contacts
+- **Commands** — whether typed commands like `!menu`, `!ping` work at all
+- **Broadcast** — whether `!broadcast` is usable for this client
 
-Copy `.env.example` to `.env` and fill in:
+Turning everything off except "Auto Status Viewing" gives you exactly the
+"client only wants status viewing" bot you described — commands won't
+respond, no reactions, nothing else happens, just silent status viewing.
 
-```bash
-cp .env.example .env
-```
+## Known limitations
 
-At minimum set `DATABASE_URL` and `ADMIN_NUMBERS` (your own number, digits
-only, with country code, e.g. `15551234567`).
-
-### 4. Run locally first (recommended)
-
-```bash
-npm start
-```
-
-Visit `http://localhost:3000/qr` in your browser, scan with WhatsApp
-(Settings → Linked Devices → Link a Device). Once connected, the `session/`
-folder will contain your auth credentials — keep this folder, it's how the
-bot stays logged in.
-
-**Only have one phone?** You don't need a second device to scan a QR code.
-Instead, visit `/pair`, enter the phone number you want to link (digits
-only, with country code), and you'll get a short pairing code. On that same
-phone, go to WhatsApp → Settings → Linked Devices → Link a Device → **Link
-with phone number instead**, and type in the code. No camera or second
-device required.
-
-### 5. Deploy to Render
-
-- Push this code to a GitHub repo (the `.gitignore` already excludes
-  `session/`, `.env`, and `downloads/` — **do not commit these**, they
-  contain secrets/session keys)
-- Render dashboard → New → Web Service → connect your repo
-- Set environment variables in the Render dashboard (`DATABASE_URL`,
-  `ADMIN_NUMBERS`, etc.) — `render.yaml` documents which ones are needed
-- Deploy, then visit `https://<your-service>.onrender.com/qr` to scan and
-  log in
-- **For the session to survive restarts**, add a persistent disk (paid
-  plans only) mounted at the `session/` path, as set up in `render.yaml`
-
-### 6. Test it
-
-Message your bot's number from another phone:
-- `!menu` — see all commands
-- `!ping` — check it's alive
-- `!options` — try the interactive buttons
-- `!order` — try the multi-step flow
-- Post a WhatsApp Status from a contact and check your database's
-  `status_log` table — the bot will have auto-viewed it
-
-## Per-user feature toggles, scheduled posts, and reminders
-
-Admins can control specific features **per WhatsApp number**, independent
-of the bot-wide defaults in `.env`. Two ways to do this:
-
-**Text commands:**
-```
-!setfeature <number> <feature> on/off    e.g. !setfeature 254712345678 auto_react on
-!myfeatures <number>                     show current settings for a number
-!setreply <number> <message>             customize that user's auto-reply text
-```
-Available features: `auto_view`, `auto_react`, `auto_reply`, `auto_status_post`, `auto_reminder`
-
-**Interactive menu:**
-```
-!features <number>
-```
-Shows a tappable list — tap any feature to toggle it on/off, with the menu
-refreshing immediately to show the new state.
-
-**Auto-reply** sends an away-message-style response to a user's first
-message (and then again after a cooldown — default 60 minutes, configurable
-via `AUTO_REPLY_COOLDOWN_MINUTES`), if `auto_reply` is enabled for that
-number. Customize the message with `!setreply`.
-
-**Scheduled status posts** (the bot's own WhatsApp Status, posted at a set
-time daily):
-```
-!schedulestatus <HH:MM> <caption>   e.g. !schedulestatus 07:00 Good morning! ☀️
-!liststatusposts
-!cancelstatuspost <id>
-```
-Note: scheduled posts created via command take effect after the next
-restart/deploy (the scheduler loads jobs from the database on startup).
-
-**Reminders** (recurring daily, or one-time) sent to a specific user:
-```
-!remind <number> <HH:MM> <message> [--notifyme]
-!remind <number> <YYYY-MM-DDTHH:MM> <message> [--notifyme]
-!myreminders <number>
-!cancelreminder <id>
-```
-`--notifyme` also pings the admin who created the reminder once it's sent.
-Recurring reminders take effect after the next restart/deploy; one-time
-reminders are checked every minute regardless.
-
-## Admin web dashboard
-
-A password-protected web dashboard at `/dashboard` lets you manage users,
-features, scheduled posts, and reminders from a browser instead of typing
-WhatsApp commands.
-
-**Setup:** set these in your environment (Render dashboard or `.env`):
-```
-DASHBOARD_USERNAME=admin
-DASHBOARD_PASSWORD=choose-a-strong-password
-SESSION_SECRET=a-long-random-string
-```
-`SESSION_SECRET` should be random and kept secret — it signs your login
-session cookies. Generate one with `openssl rand -hex 32` or any password
-generator. If you don't set it, logins still work but reset on every
-restart/deploy.
-
-**Using it:** visit `https://your-service.onrender.com/dashboard`, log in,
-then:
-- **Users** — browse recent users or look up any number directly
-- **Manage User** page — toggle features (auto-view, auto-react, auto-reply,
-  scheduled posts, reminders), edit their auto-reply message, add/cancel
-  reminders for them
-- **Scheduled Posts** — view, add, or cancel daily WhatsApp Status posts
-
-This is for admin use only — regular WhatsApp users never see or interact
-with this page. Don't share the URL or credentials; anyone who has both can
-control the bot's settings for any user.
-
-## Customizing
-
-- Add new commands: create a file in `src/commands/`, call
-  `register('name', { description, adminOnly, handler })`, then `require()`
-  it in `src/commands/index.js`.
-- Edit FAQ answers in `src/commands/faq.js`.
-- Edit interactive menu options/categories in `src/commands/interactive.js`.
-- Adjust broadcast delay via `BROADCAST_DELAY_MS` in `.env` (higher = safer
-  against bans, slower to send).
-
-## Known limitations / things to wire up further
-
-- Sticker conversion (`!sticker`) is stubbed — to fully implement, add the
-  `wa-sticker-formatter` (or `sharp`) package and convert the replied-to
-  image to webp before sending.
-- No AI/LLM-based free-text replies yet (you opted to skip this) — to add
-  later, call the Anthropic API inside the fallback branch in
-  `src/handlers/messageHandler.js`.
-- Group-specific commands (e.g. admin-only group moderation) are not
-  built out — `isGroup` is already passed into every command handler if
-  you want to add this.
+- No payment/subscription system — this manages bot access, not billing.
+  You'd add that separately (e.g. manually toggling features based on
+  whether a client paid, or integrating a payment provider).
+- No per-client custom command sets yet — all clients currently share the
+  same command definitions (`!menu`, `!ping`, `!order`, etc.); only whether
+  commands work at all is toggleable, not which specific commands.
+- Session storage is filesystem-based — fine for one server, but won't
+  survive Render free-tier restarts without a persistent disk.

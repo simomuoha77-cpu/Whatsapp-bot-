@@ -1,19 +1,16 @@
 const logger = require('../utils/logger');
 const commands = require('../commands/index');
-const { upsertUser, isAdmin, isBlocked } = require('../db/users');
+const { upsertContact, isBlocked } = require('../db/contacts');
 const { logMessage } = require('../db/messages');
 const { logCommand } = require('../db/logs');
 const { getState } = require('../db/sessionState');
 const { handleStatefulFlow } = require('../commands/order');
 const { handleInteractiveReply } = require('../commands/interactive');
-const { saveMediaFromMessage } = require('../utils/media');
-const { getFeatures } = require('../db/userFeatures');
+const { getFeatures } = require('../db/botFeatures');
 
 const PREFIX = process.env.COMMAND_PREFIX || '!';
-// Don't auto-reply more than once per this many minutes for the same sender,
-// so it doesn't repeat on every message in an ongoing conversation.
 const AUTO_REPLY_COOLDOWN_MS = parseInt(process.env.AUTO_REPLY_COOLDOWN_MINUTES || '60', 10) * 60 * 1000;
-const lastAutoReplyAt = new Map(); // jid -> timestamp, in-memory (resets on restart)
+const lastAutoReplyAt = new Map(); // `${botId}:${jid}` -> timestamp
 
 function extractText(msg) {
   const m = msg.message || {};
@@ -47,7 +44,12 @@ function getMessageType(msg) {
   return 'text';
 }
 
-function registerMessageHandler(sock) {
+/**
+ * Registers message handling for one specific bot's socket. Every action
+ * inside is scoped to botId, so client A's contacts/state/features never
+ * leak into client B's bot.
+ */
+function registerMessageHandler(sock, botId) {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
@@ -63,16 +65,20 @@ function registerMessageHandler(sock) {
         const messageType = getMessageType(msg);
         const interactiveSelection = extractInteractiveSelection(msg);
 
-        await upsertUser(sender, msg.pushName);
+        // Only direct 1:1 contacts are tracked — groups are out of scope entirely.
+        if (isGroup) continue;
 
-        if (await isBlocked(sender)) {
-          continue; // silently ignore blocked users
-        }
+        const features = await getFeatures(botId);
+
+        await upsertContact(botId, sender, msg.pushName);
+
+        if (await isBlocked(botId, sender)) continue;
 
         const reply = async (content) => {
           const payload = typeof content === 'string' ? { text: content } : content;
           await sock.sendMessage(sender, payload);
           await logMessage({
+            botId,
             jid: sender,
             direction: 'outgoing',
             messageType: typeof content === 'string' ? 'text' : Object.keys(content)[0],
@@ -81,6 +87,7 @@ function registerMessageHandler(sock) {
         };
 
         await logMessage({
+          botId,
           jid: sender,
           messageId: msg.key.id,
           direction: 'incoming',
@@ -88,46 +95,36 @@ function registerMessageHandler(sock) {
           body: text || null,
         });
 
-        // Auto-reply (away message) — only for senders with this feature enabled,
-        // and only once per cooldown window so it doesn't repeat on every message.
-        if (!isGroup) {
-          try {
-            const features = await getFeatures(sender);
-            if (features && features.auto_reply) {
-              const lastSent = lastAutoReplyAt.get(sender) || 0;
-              if (Date.now() - lastSent > AUTO_REPLY_COOLDOWN_MS) {
-                lastAutoReplyAt.set(sender, Date.now());
-                await reply(features.auto_reply_message || "Thanks for your message! I'll reply shortly.");
-              }
-            }
-          } catch (err) {
-            logger.warn({ err, sender }, 'Failed to process auto-reply');
+        // Auto-reply (away message) — only if this bot has the feature enabled.
+        if (features.auto_reply) {
+          const key = `${botId}:${sender}`;
+          const lastSent = lastAutoReplyAt.get(key) || 0;
+          if (Date.now() - lastSent > AUTO_REPLY_COOLDOWN_MS) {
+            lastAutoReplyAt.set(key, Date.now());
+            await reply(features.auto_reply_message || "Thanks for your message! I'll reply shortly.");
           }
         }
 
-        // Save incoming media (images/docs/audio sent TO the bot) for later retrieval
-        if (['image', 'video', 'audio', 'document'].includes(messageType)) {
-          await saveMediaFromMessage(msg, 'incoming').catch((err) =>
-            logger.warn({ err }, 'Failed to save incoming media')
-          );
-        }
-
-        // 1. Handle button/list interactive replies first
         if (interactiveSelection) {
-          await handleInteractiveReply({ sock, sender, selectedId: interactiveSelection, reply });
+          if (features.commands_enabled) {
+            await handleInteractiveReply({ sock, botId, sender, selectedId: interactiveSelection, reply });
+          }
           continue;
         }
 
-        if (!text) continue; // media with no caption/command, nothing more to do
+        if (!text) continue;
 
-        // 2. Handle stateful multi-step flows (e.g. mid-order)
-        const state = await getState(sender);
+        // Commands and stateful flows are gated by commands_enabled — if a
+        // client's bot is set to "auto-status-viewing only," typed commands
+        // simply won't respond at all.
+        if (!features.commands_enabled) continue;
+
+        const state = await getState(botId, sender);
         if (state.state !== 'idle' && !text.startsWith(PREFIX)) {
-          const handled = await handleStatefulFlow({ state, text, reply, sender });
+          const handled = await handleStatefulFlow({ botId, state, text, reply, sender });
           if (handled) continue;
         }
 
-        // 3. Handle commands
         if (text.startsWith(PREFIX)) {
           const [rawCmd, ...args] = text.slice(PREFIX.length).trim().split(/\s+/);
           const cmd = commands.get(rawCmd);
@@ -137,22 +134,19 @@ function registerMessageHandler(sock) {
             continue;
           }
 
-          if (cmd.adminOnly && !(await isAdmin(sender))) {
-            await reply('🚫 This command is restricted to bot admins.');
+          if (cmd.requiresBroadcast && !features.broadcast_enabled) {
+            await reply('🚫 This feature is not enabled for this bot.');
             continue;
           }
 
-          await logCommand(sender, rawCmd, args.join(' '));
-          await cmd.handler({ sock, sender, reply, args, msg, isGroup });
+          await logCommand(botId, sender, rawCmd, args.join(' '));
+          await cmd.handler({ sock, botId, sender, reply, args, msg, isGroup });
           continue;
         }
 
-        // 4. Fallback for plain text with no active flow and no command
-        await reply(
-          `I didn't understand that. Type *${PREFIX}menu* to see what I can do.`
-        );
+        await reply(`I didn't understand that. Type *${PREFIX}menu* to see what I can do.`);
       } catch (err) {
-        logger.error({ err }, 'Error handling incoming message');
+        logger.error({ err, botId }, 'Error handling incoming message');
       }
     }
   });

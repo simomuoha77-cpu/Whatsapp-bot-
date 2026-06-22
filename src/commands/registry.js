@@ -1,7 +1,3 @@
-/**
- * Central command registry.
- * Each command module calls register() to add itself.
- */
 const commands = new Map();
 
 function register(name, definition) {

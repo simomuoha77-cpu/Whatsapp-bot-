@@ -1,15 +1,13 @@
 require('dotenv').config();
 const logger = require('./utils/logger');
 const { runMigrations } = require('./db/migrate');
-const { startSock } = require('./whatsapp');
-const { registerMessageHandler } = require('./handlers/messageHandler');
-const { registerStatusHandler } = require('./handlers/statusHandler');
 const { createServer } = require('./server');
-const { startSelfPing } = require('./utils/selfPing');
+const { startAllBots } = require('./utils/botManager');
+const { onBotReady } = require('./handlers/botStartHook');
 const { startScheduler } = require('./handlers/scheduler');
 
 async function main() {
-  logger.info('Starting WhatsApp bot...');
+  logger.info('Starting WhatsApp bot platform...');
 
   try {
     await runMigrations();
@@ -21,16 +19,14 @@ async function main() {
   const app = createServer();
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
-    logger.info(`Web server listening on port ${PORT}. Visit /qr to log in, /health to check status.`);
-    startSelfPing();
+    logger.info(`Server listening on port ${PORT}. Visit /admin to manage clients.`);
   });
 
-  await startSock((sock) => {
-    registerMessageHandler(sock);
-    registerStatusHandler(sock);
-    startScheduler(sock);
-    logger.info('Bot is fully online and listening for messages.');
-  });
+  // Reconnect every existing client bot on startup.
+  await startAllBots(onBotReady);
+
+  // Start the cron-based scheduler covering all bots' scheduled posts/reminders.
+  await startScheduler();
 }
 
 process.on('unhandledRejection', (err) => {

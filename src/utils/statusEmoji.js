@@ -1,7 +1,3 @@
-/**
- * Maps caption keywords to emoji reactions for auto-reacting to statuses.
- * Checked in order; first match wins. Add more keywords/emoji as you like.
- */
 const KEYWORD_EMOJI_MAP = [
   { keywords: ['happy birthday', 'birthday', 'bday'], emoji: '🎉' },
   { keywords: ['congrat', 'congratulation', 'graduat', 'promotion'], emoji: '🎊' },
@@ -23,20 +19,13 @@ const KEYWORD_EMOJI_MAP = [
   { keywords: ['pray', 'blessed', 'thank god', 'alhamdulillah'], emoji: '🙏' },
 ];
 
-const DEFAULT_EMOJI = '👍'; // used when there's no caption, or no keyword matches
+const DEFAULT_EMOJI = '👍';
 
-/**
- * Picks an emoji based on caption text. Falls back to a default if no
- * caption exists or nothing matches.
- */
 function pickEmojiForCaption(caption) {
   if (!caption || typeof caption !== 'string') return DEFAULT_EMOJI;
   const lower = caption.toLowerCase();
-
   for (const { keywords, emoji } of KEYWORD_EMOJI_MAP) {
-    if (keywords.some((kw) => lower.includes(kw))) {
-      return emoji;
-    }
+    if (keywords.some((kw) => lower.includes(kw))) return emoji;
   }
   return DEFAULT_EMOJI;
 }

@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-bot",
+  "name": "whatsapp-bot-saas",
   "version": "1.0.0",
-  "description": "Full-featured WhatsApp bot using Baileys, Postgres, and a command system",
+  "description": "Multi-tenant WhatsApp bot platform - manage multiple clients' bots from one admin dashboard",
   "main": "src/index.js",
   "type": "commonjs",
   "engines": {
@@ -23,8 +23,7 @@
     "pino": "^9.3.2",
     "dotenv": "^16.4.5",
     "node-cache": "^5.1.2",
-    "node-cron": "^3.0.3",
-    "p-queue": "^7.4.1"
+    "node-cron": "^3.0.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"

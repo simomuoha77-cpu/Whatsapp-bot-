@@ -2,7 +2,7 @@ const { Pool } = require('pg');
 const logger = require('../utils/logger');
 
 if (!process.env.DATABASE_URL) {
-  logger.error('DATABASE_URL is not set. Set it in your .env or Render environment variables.');
+  logger.error('DATABASE_URL is not set.');
 }
 
 const pool = new Pool({
@@ -20,12 +20,8 @@ pool.on('error', (err) => {
 });
 
 async function query(text, params) {
-  const start = Date.now();
   try {
-    const res = await pool.query(text, params);
-    const duration = Date.now() - start;
-    logger.debug({ text, duration, rows: res.rowCount }, 'Executed query');
-    return res;
+    return await pool.query(text, params);
   } catch (err) {
     logger.error({ err, text }, 'Query failed');
     throw err;

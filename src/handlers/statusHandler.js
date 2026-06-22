@@ -1,13 +1,9 @@
 const logger = require('../utils/logger');
-const { saveMediaFromMessage } = require('../utils/media');
 const { logStatusView } = require('../db/logs');
 const { pickEmojiForCaption } = require('../utils/statusEmoji');
-const { getFeatures } = require('../db/userFeatures');
+const { getFeatures } = require('../db/botFeatures');
 
 const STATUS_JID = 'status@broadcast';
-const DEFAULT_AUTO_VIEW = (process.env.AUTO_VIEW_STATUS || 'true').toLowerCase() === 'true';
-const DEFAULT_AUTO_DOWNLOAD = (process.env.AUTO_DOWNLOAD_STATUS || 'false').toLowerCase() === 'true';
-const DEFAULT_AUTO_REACT = (process.env.AUTO_REACT_STATUS || 'false').toLowerCase() === 'true';
 const REACT_DELAY_MIN_MS = parseInt(process.env.STATUS_REACT_DELAY_MIN_MS || '1500', 10);
 const REACT_DELAY_MAX_MS = parseInt(process.env.STATUS_REACT_DELAY_MAX_MS || '5000', 10);
 
@@ -39,19 +35,17 @@ function randomDelay(min, max) {
 async function reactToStatus(sock, msg, caption) {
   const emoji = pickEmojiForCaption(caption);
   await randomDelay(REACT_DELAY_MIN_MS, REACT_DELAY_MAX_MS);
-  await sock.sendMessage(STATUS_JID, {
-    react: { text: emoji, key: msg.key },
-  });
+  await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } });
   return emoji;
 }
 
 /**
- * Registers listeners on the socket for incoming Status updates.
- * Per-user settings (user_features table) override the global env-var
- * defaults, so an admin can enable/disable auto-view or auto-react for
- * specific contacts independently of the bot-wide default.
+ * Registers status (story) handling for one specific bot's socket.
+ * Whether it views/reacts at all is controlled entirely by that bot's
+ * own feature row — this is exactly the "client only wants auto-status-
+ * viewing" control surface.
  */
-function registerStatusHandler(sock) {
+function registerStatusHandler(sock, botId) {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       if (msg.key?.remoteJid !== STATUS_JID) continue;
@@ -61,48 +55,38 @@ function registerStatusHandler(sock) {
       const messageType = getMessageType(msg);
       const caption = getCaption(msg);
 
-      logger.info({ contactJid, messageType }, 'New status update received');
-
       let features;
       try {
-        features = await getFeatures(contactJid);
+        features = await getFeatures(botId);
       } catch (err) {
-        logger.warn({ err, contactJid }, 'Failed to load per-user features, using global defaults');
-        features = null;
+        logger.warn({ err, botId }, 'Failed to load bot features for status handling');
+        continue;
       }
 
-      const shouldView = features ? features.auto_view : DEFAULT_AUTO_VIEW;
-      const shouldReact = features ? features.auto_react : DEFAULT_AUTO_REACT;
-
-      if (shouldView) {
+      if (features.auto_view_status) {
         try {
           await sock.readMessages([msg.key]);
         } catch (err) {
-          logger.warn({ err }, 'Failed to mark status as viewed');
+          logger.warn({ err, botId }, 'Failed to mark status as viewed');
         }
       }
 
-      if (shouldReact) {
+      if (features.auto_react_status) {
         reactToStatus(sock, msg, caption)
-          .then((emoji) => logger.info({ contactJid, emoji }, 'Reacted to status'))
-          .catch((err) => logger.warn({ err, contactJid }, 'Failed to react to status'));
-      }
-
-      let mediaPath = null;
-      if (DEFAULT_AUTO_DOWNLOAD && ['imageMessage', 'videoMessage', 'audioMessage'].includes(messageType)) {
-        mediaPath = await saveMediaFromMessage(msg, 'statuses');
+          .then((emoji) => logger.info({ botId, contactJid, emoji }, 'Reacted to status'))
+          .catch((err) => logger.warn({ err, botId, contactJid }, 'Failed to react to status'));
       }
 
       try {
         await logStatusView({
+          botId,
           contactJid,
           statusId: msg.key.id,
           mediaType: messageType,
-          mediaPath,
           caption,
         });
       } catch (err) {
-        logger.error({ err }, 'Failed to log status view to database');
+        logger.error({ err, botId }, 'Failed to log status view to database');
       }
     }
   });

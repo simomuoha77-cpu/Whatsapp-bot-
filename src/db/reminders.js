@@ -1,33 +1,30 @@
 const { query } = require('./pool');
 
-async function createReminder({ createdBy, targetJid, message, cronExpression, runAt, notifyAdmin }) {
+async function createReminder({ botId, targetJid, message, cronExpression, runAt, notifyAdmin }) {
   const res = await query(
-    `INSERT INTO reminders (created_by, target_jid, message, cron_expression, run_at, notify_admin)
+    `INSERT INTO reminders (bot_id, target_jid, message, cron_expression, run_at, notify_admin)
      VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [createdBy, targetJid, message, cronExpression || null, runAt || null, !!notifyAdmin]
+    [botId, targetJid, message, cronExpression || null, runAt || null, !!notifyAdmin]
   );
   return res.rows[0];
 }
 
 async function getActiveRecurringReminders() {
-  const res = await query(
-    `SELECT * FROM reminders WHERE is_active = TRUE AND cron_expression IS NOT NULL`
-  );
+  const res = await query(`SELECT * FROM reminders WHERE is_active = TRUE AND cron_expression IS NOT NULL`);
   return res.rows;
 }
 
 async function getDueOneOffReminders() {
   const res = await query(
-    `SELECT * FROM reminders
-     WHERE is_active = TRUE AND run_at IS NOT NULL AND run_at <= NOW() AND last_run_at IS NULL`
+    `SELECT * FROM reminders WHERE is_active = TRUE AND run_at IS NOT NULL AND run_at <= NOW() AND last_run_at IS NULL`
   );
   return res.rows;
 }
 
-async function getRemindersForUser(targetJid) {
+async function getRemindersForBot(botId) {
   const res = await query(
-    'SELECT * FROM reminders WHERE target_jid = $1 AND is_active = TRUE ORDER BY created_at DESC',
-    [targetJid]
+    'SELECT * FROM reminders WHERE bot_id = $1 AND is_active = TRUE ORDER BY created_at DESC',
+    [botId]
   );
   return res.rows;
 }
@@ -44,7 +41,7 @@ module.exports = {
   createReminder,
   getActiveRecurringReminders,
   getDueOneOffReminders,
-  getRemindersForUser,
+  getRemindersForBot,
   markReminderRun,
   deactivateReminder,
 };

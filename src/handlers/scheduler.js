@@ -1,5 +1,4 @@
 const cron = require('node-cron');
-const fs = require('fs');
 const logger = require('../utils/logger');
 const {
   getActiveScheduledStatusPosts,
@@ -10,88 +9,70 @@ const {
   getDueOneOffReminders,
   markReminderRun,
 } = require('../db/reminders');
+const { getBotState } = require('../utils/botManager');
 
-const activeJobs = new Map(); // key: `status:${id}` or `reminder:${id}` -> cron task
+const activeJobs = new Map();
 
-async function postScheduledStatus(sock, post) {
+async function postScheduledStatus(post) {
+  const botState = getBotState(post.bot_id);
+  if (!botState || !botState.sock || botState.status !== 'connected') {
+    logger.warn({ postId: post.id, botId: post.bot_id }, 'Bot not connected, skipping scheduled status post');
+    return;
+  }
   try {
-    const message = {};
-    if (post.media_path && fs.existsSync(post.media_path)) {
-      const buffer = fs.readFileSync(post.media_path);
-      const isVideo = /\.(mp4|mov|mkv)$/i.test(post.media_path);
-      if (isVideo) {
-        message.video = buffer;
-      } else {
-        message.image = buffer;
-      }
-      if (post.caption) message.caption = post.caption;
-    } else if (post.caption) {
-      message.text = post.caption;
-    } else {
-      logger.warn({ postId: post.id }, 'Scheduled status post has no caption or media, skipping');
-      return;
-    }
-
-    await sock.sendMessage('status@broadcast', message);
+    const message = post.caption ? { text: post.caption } : null;
+    if (!message) return;
+    await botState.sock.sendMessage('status@broadcast', message);
     await markScheduledStatusPostRun(post.id);
-    logger.info({ postId: post.id }, 'Posted scheduled status');
+    logger.info({ postId: post.id, botId: post.bot_id }, 'Posted scheduled status');
   } catch (err) {
     logger.error({ err, postId: post.id }, 'Failed to post scheduled status');
   }
 }
 
-async function sendReminder(sock, reminder) {
+async function sendReminder(reminder) {
+  const botState = getBotState(reminder.bot_id);
+  if (!botState || !botState.sock || botState.status !== 'connected') {
+    logger.warn({ reminderId: reminder.id, botId: reminder.bot_id }, 'Bot not connected, skipping reminder');
+    return;
+  }
   try {
-    await sock.sendMessage(reminder.target_jid, { text: reminder.message });
-    if (reminder.notify_admin && reminder.created_by !== reminder.target_jid) {
-      await sock.sendMessage(reminder.created_by, {
-        text: `🔔 Reminder sent to ${reminder.target_jid}: "${reminder.message}"`,
-      });
-    }
+    await botState.sock.sendMessage(reminder.target_jid, { text: reminder.message });
     await markReminderRun(reminder.id);
-    logger.info({ reminderId: reminder.id }, 'Sent reminder');
+    logger.info({ reminderId: reminder.id, botId: reminder.bot_id }, 'Sent reminder');
   } catch (err) {
     logger.error({ err, reminderId: reminder.id }, 'Failed to send reminder');
   }
 }
 
 /**
- * Loads all active scheduled status posts and recurring reminders from the
- * database and registers cron jobs for them. Also starts a 1-minute poller
- * for one-off reminders (run_at based, not cron-based).
+ * Loads all active scheduled status posts and recurring reminders across
+ * ALL bots and registers cron jobs for them. Each job looks up the live
+ * socket for its bot_id at run time, so it always uses the current
+ * connection (even after reconnects).
  */
-async function startScheduler(sock) {
-  // Clear any existing jobs before reloading (used on refresh)
+async function startScheduler() {
   for (const job of activeJobs.values()) job.stop();
   activeJobs.clear();
 
   const posts = await getActiveScheduledStatusPosts();
   for (const post of posts) {
-    if (!cron.validate(post.cron_expression)) {
-      logger.warn({ postId: post.id, cron: post.cron_expression }, 'Invalid cron expression, skipping');
-      continue;
-    }
-    const job = cron.schedule(post.cron_expression, () => postScheduledStatus(sock, post));
+    if (!cron.validate(post.cron_expression)) continue;
+    const job = cron.schedule(post.cron_expression, () => postScheduledStatus(post));
     activeJobs.set(`status:${post.id}`, job);
   }
 
   const reminders = await getActiveRecurringReminders();
   for (const reminder of reminders) {
-    if (!cron.validate(reminder.cron_expression)) {
-      logger.warn({ reminderId: reminder.id }, 'Invalid cron expression, skipping');
-      continue;
-    }
-    const job = cron.schedule(reminder.cron_expression, () => sendReminder(sock, reminder));
+    if (!cron.validate(reminder.cron_expression)) continue;
+    const job = cron.schedule(reminder.cron_expression, () => sendReminder(reminder));
     activeJobs.set(`reminder:${reminder.id}`, job);
   }
 
-  // One-off reminders (specific date/time, not recurring) — checked every minute.
   cron.schedule('* * * * *', async () => {
     try {
       const due = await getDueOneOffReminders();
-      for (const reminder of due) {
-        await sendReminder(sock, reminder);
-      }
+      for (const reminder of due) await sendReminder(reminder);
     } catch (err) {
       logger.error({ err }, 'Error checking due one-off reminders');
     }
@@ -99,16 +80,12 @@ async function startScheduler(sock) {
 
   logger.info(
     { statusPosts: posts.length, recurringReminders: reminders.length },
-    'Scheduler started'
+    'Scheduler started (covers all bots)'
   );
 }
 
-/**
- * Call this after creating/removing a scheduled post or reminder via a
- * command, so the new cron job picks up immediately without a restart.
- */
-async function refreshScheduler(sock) {
-  await startScheduler(sock);
+async function refreshScheduler() {
+  await startScheduler();
 }
 
 module.exports = { startScheduler, refreshScheduler };

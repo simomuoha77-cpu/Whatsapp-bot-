@@ -1,6 +1,6 @@
 node_modules/
 .env
-session/
+sessions/
 downloads/
 *.log
 npm-debug.log*
