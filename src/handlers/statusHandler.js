@@ -1,14 +1,59 @@
 const logger = require('../utils/logger');
-const { saveMediaFromMessage } = require('../utils/media');
 const { logStatusView } = require('../db/logs');
 const { pickEmojiForCaption } = require('../utils/statusEmoji');
+const { getFeatures } = require('../db/botFeatures');
 
 const STATUS_JID = 'status@broadcast';
-const AUTO_VIEW = (process.env.AUTO_VIEW_STATUS || 'true').toLowerCase() === 'true';
-const AUTO_DOWNLOAD = (process.env.AUTO_DOWNLOAD_STATUS || 'false').toLowerCase() === 'true';
-const AUTO_REACT = (process.env.AUTO_REACT_STATUS || 'false').toLowerCase() === 'true';
 const REACT_DELAY_MIN_MS = parseInt(process.env.STATUS_REACT_DELAY_MIN_MS || '1500', 10);
 const REACT_DELAY_MAX_MS = parseInt(process.env.STATUS_REACT_DELAY_MAX_MS || '5000', 10);
+
+const processedStatusIds = new Map();
+const DEDUPE_TTL_MS = 10 * 60 * 1000;
+
+function cleanupOldEntries() {
+  const now = Date.now();
+  for (const [key, ts] of processedStatusIds) {
+    if (now - ts > DEDUPE_TTL_MS) processedStatusIds.delete(key);
+  }
+}
+setInterval(cleanupOldEntries, 60 * 1000);
+
+function alreadyProcessed(botId, statusId) {
+  const key = botId + ':' + statusId;
+  if (processedStatusIds.has(key)) return true;
+  processedStatusIds.set(key, Date.now());
+  return false;
+}
+
+const reactionQueues = new Map();
+
+function getQueue(botId) {
+  if (!reactionQueues.has(botId)) {
+    reactionQueues.set(botId, { queue: [], processing: false });
+  }
+  return reactionQueues.get(botId);
+}
+
+function enqueueReaction(botId, task) {
+  const q = getQueue(botId);
+  q.queue.push(task);
+  processQueue(botId);
+}
+
+async function processQueue(botId) {
+  const q = getQueue(botId);
+  if (q.processing) return;
+  q.processing = true;
+  while (q.queue.length > 0) {
+    const task = q.queue.shift();
+    try {
+      await task();
+    } catch (err) {
+      logger.warn({ err, botId }, 'Reaction queue task failed');
+    }
+  }
+  q.processing = false;
+}
 
 function getMessageType(msg) {
   const keys = Object.keys(msg.message || {});
@@ -42,47 +87,52 @@ async function reactToStatus(sock, msg, caption) {
   return emoji;
 }
 
-function registerStatusHandler(sock) {
+function registerStatusHandler(sock, botId) {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       if (msg.key?.remoteJid !== STATUS_JID) continue;
       if (!msg.message) continue;
+      if (!msg.key.id) continue;
+
+      if (alreadyProcessed(botId, msg.key.id)) continue;
 
       const contactJid = msg.key.participant || msg.key.remoteJid;
       const messageType = getMessageType(msg);
       const caption = getCaption(msg);
 
-      logger.info({ contactJid, messageType }, 'New status update received');
+      let features;
+      try {
+        features = await getFeatures(botId);
+      } catch (err) {
+        logger.warn({ err, botId }, 'Failed to load bot features for status handling');
+        continue;
+      }
 
-      if (AUTO_VIEW) {
+      if (features.auto_view_status) {
         try {
           await sock.readMessages([msg.key]);
         } catch (err) {
-          logger.warn({ err }, 'Failed to mark status as viewed');
+          logger.warn({ err, botId }, 'Failed to mark status as viewed');
         }
       }
 
-      if (AUTO_REACT) {
-        reactToStatus(sock, msg, caption)
-          .then((emoji) => logger.info({ contactJid, emoji }, 'Reacted to status'))
-          .catch((err) => logger.warn({ err, contactJid }, 'Failed to react to status'));
-      }
-
-      let mediaPath = null;
-      if (AUTO_DOWNLOAD && ['imageMessage', 'videoMessage', 'audioMessage'].includes(messageType)) {
-        mediaPath = await saveMediaFromMessage(msg, 'statuses');
+      if (features.auto_react_status) {
+        enqueueReaction(botId, async () => {
+          const emoji = await reactToStatus(sock, msg, caption);
+          logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+        });
       }
 
       try {
         await logStatusView({
+          botId,
           contactJid,
           statusId: msg.key.id,
           mediaType: messageType,
-          mediaPath,
           caption,
         });
       } catch (err) {
-        logger.error({ err }, 'Failed to log status view to database');
+        logger.error({ err, botId }, 'Failed to log status view to database');
       }
     }
   });
