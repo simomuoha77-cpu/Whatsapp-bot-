@@ -263,6 +263,13 @@ function createAdminRoutes() {
     const mode = req.body.mode;
     if (STEALTH_READ_MODES.includes(mode)) {
       await setStealthReadMode(botId, mode);
+      try {
+        const live = getBotState(botId);
+        if (live && live.sock && live.status === 'connected') {
+          const receiptsValue = mode === 'normal' ? 'all' : 'none';
+          await live.sock.updateReadReceiptsPrivacy(receiptsValue);
+        }
+      } catch (err) {}
     }
     res.redirect(`/admin/bot/${botId}`);
   });

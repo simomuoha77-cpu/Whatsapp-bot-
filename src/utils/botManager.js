@@ -112,6 +112,18 @@ async function startBotSocket(botId, slug, onReady) {
         last_seen_at: new Date().toISOString(),
       });
       logger.info({ botId, ownNumber }, 'Bot connected to WhatsApp');
+
+      try {
+        const { getFeatures } = require('../db/botFeatures');
+        const features = await getFeatures(botId);
+        const stealthMode = features.stealth_read_mode || 'normal';
+        const receiptsValue = stealthMode === 'normal' ? 'all' : 'none';
+        await sock.updateReadReceiptsPrivacy(receiptsValue);
+        logger.info({ botId, stealthMode, receiptsValue }, 'Applied read receipts privacy setting');
+      } catch (err) {
+        logger.warn({ err, botId }, 'Failed to apply read receipts privacy setting');
+      }
+
       if (onReady) onReady(sock, botId);
     }
 
