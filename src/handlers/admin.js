@@ -12,6 +12,7 @@ const {
   setStealthReadMode,
 } = require('../db/botFeatures');
 const { getContactsForBot } = require('../db/contacts');
+const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
 const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
 const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
@@ -137,6 +138,7 @@ function createAdminRoutes() {
     const contacts = await getContactsForBot(botId, 20);
     const posts = await getScheduledStatusPostsForBot(botId);
     const reminders = await getRemindersForBot(botId);
+    const viewOnceCaptures = await getViewOnceCapturesForBot(botId, 20);
 
     const onboardingUrl = `${req.protocol}://${req.get('host')}/connect/${bot.slug}`;
 
@@ -154,6 +156,17 @@ function createAdminRoutes() {
     const contactRows = contacts.map((c) => `
       <div class="row"><span>${c.display_name || c.phone_number}</span><small>${c.message_count} msgs</small></div>
     `).join('') || '<p>No contacts yet.</p>';
+
+    const viewOnceRows = viewOnceCaptures.map((v) => `
+      <div class="row">
+        <span>
+          ${v.media_type === 'video' ? '🎥' : '📷'}
+          <strong>${v.sender_name || 'Unknown'}</strong> (${v.sender_number || '?'})
+          ${v.is_group ? ` in group "${v.group_name || v.chat_jid}"` : ''}
+        </span>
+        <small>${new Date(v.captured_at).toLocaleString()}</small>
+      </div>
+    `).join('') || '<p>No view-once media captured yet.</p>';
 
     const postRows = posts.map((p) => `
       <div class="row">
@@ -216,6 +229,12 @@ function createAdminRoutes() {
       <div class="card">
         <h3>Recent contacts</h3>
         ${contactRows}
+      </div>
+
+      <div class="card">
+        <h3>👁️ View-Once Captures</h3>
+        <p><small>Captured media is also forwarded to this bot's own "Message Yourself" chat.</small></p>
+        ${viewOnceRows}
       </div>
 
       <div class="card">
