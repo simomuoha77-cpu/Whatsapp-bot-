@@ -76,7 +76,7 @@ function registerMessageHandler(sock, botId) {
 
         const reply = async (content) => {
           const payload = typeof content === 'string' ? { text: content } : content;
-          await sock.sendMessage(sender, payload);
+          const sentMsg = await sock.sendMessage(sender, payload);
           await logMessage({
             botId,
             jid: sender,
@@ -84,6 +84,13 @@ function registerMessageHandler(sock, botId) {
             messageType: typeof content === 'string' ? 'text' : Object.keys(content)[0],
             body: typeof content === 'string' ? content : JSON.stringify(content),
           });
+          try {
+            if (sentMsg) {
+              await sock.chatModify({ markRead: false, lastMessages: [sentMsg] }, sender);
+            }
+          } catch (err) {
+            logger.warn({ err, botId, sender }, 'Failed to restore unread state after reply');
+          }
         };
 
         await logMessage({
