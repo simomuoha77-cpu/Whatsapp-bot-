@@ -142,3 +142,5 @@ CREATE TABLE IF NOT EXISTS platform_admins (
   password_hash TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS stealth_read_mode TEXT NOT NULL DEFAULT 'normal';

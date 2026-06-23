@@ -4,9 +4,12 @@ const { createBot, getAllBots, getBotById, deleteBot, renameBot } = require('../
 const {
   FEATURE_COLUMNS,
   FEATURE_LABELS,
+  STEALTH_READ_MODES,
+  STEALTH_READ_MODE_LABELS,
   getFeatures,
   setFeature,
   setAutoReplyMessage,
+  setStealthReadMode,
 } = require('../db/botFeatures');
 const { getContactsForBot } = require('../db/contacts');
 const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
@@ -187,6 +190,22 @@ function createAdminRoutes() {
       </div>
 
       <div class="card">
+        <h3>Stealth Read Mode</h3>
+        <p>Controls whether incoming messages send a blue read receipt.</p>
+        <form method="POST" action="/admin/bot/${botId}/stealth-mode">
+          <select name="mode">
+            ${STEALTH_READ_MODES.map((m) => `
+              <option value="${m}" ${features.stealth_read_mode === m ? "selected" : ""}>
+                ${STEALTH_READ_MODE_LABELS[m]}
+              </option>
+            `).join("")}
+          </select>
+          <button type="submit">Save</button>
+        </form>
+        <p><small>Current: <strong>${STEALTH_READ_MODE_LABELS[features.stealth_read_mode] || features.stealth_read_mode}</strong></small></p>
+      </div>
+
+      <div class="card">
         <h3>Auto-reply message</h3>
         <form method="POST" action="/admin/bot/${botId}/reply-message">
           <input name="message" value="${(features.auto_reply_message || '').replace(/"/g, '&quot;')}" />
@@ -235,6 +254,15 @@ function createAdminRoutes() {
     if (FEATURE_COLUMNS.includes(feature)) {
       const current = await getFeatures(botId);
       await setFeature(botId, feature, !current[feature]);
+    }
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/stealth-mode', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const mode = req.body.mode;
+    if (STEALTH_READ_MODES.includes(mode)) {
+      await setStealthReadMode(botId, mode);
     }
     res.redirect(`/admin/bot/${botId}`);
   });

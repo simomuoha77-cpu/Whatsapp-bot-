@@ -69,10 +69,19 @@ function registerMessageHandler(sock, botId) {
         if (isGroup) continue;
 
         const features = await getFeatures(botId);
+        const stealthMode = features.stealth_read_mode || "normal";
 
         await upsertContact(botId, sender, msg.pushName);
 
         if (await isBlocked(botId, sender)) continue;
+
+        if (stealthMode === "normal") {
+          try {
+            await sock.readMessages([msg.key]);
+          } catch (err) {
+            logger.warn({ err, botId, sender }, "Failed to mark message as read");
+          }
+        }
 
         const reply = async (content) => {
           const payload = typeof content === 'string' ? { text: content } : content;

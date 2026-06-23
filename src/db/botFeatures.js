@@ -51,10 +51,29 @@ async function setAutoReplyMessage(botId, message) {
   );
 }
 
+
+const STEALTH_READ_MODES = ["normal", "stealth", "no_mark"];
+const STEALTH_READ_MODE_LABELS = {
+  normal: "Normal (sends read receipts)",
+  stealth: "Stealth (no read receipts, auto-reply works)",
+  no_mark: "No-Mark (auto-reply works, never marked read)",
+};
+
+async function setStealthReadMode(botId, mode) {
+  await getFeatures(botId);
+  await query(
+    `UPDATE bot_features SET stealth_read_mode = $1, updated_at = NOW() WHERE bot_id = $2`,
+    [mode, botId]
+  );
+}
+
 module.exports = {
   FEATURE_COLUMNS,
   FEATURE_LABELS,
   getFeatures,
   setFeature,
   setAutoReplyMessage,
+  setStealthReadMode,
+  STEALTH_READ_MODES,
+  STEALTH_READ_MODE_LABELS,
 };
