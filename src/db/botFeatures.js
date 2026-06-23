@@ -8,6 +8,7 @@ const FEATURE_COLUMNS = [
   'auto_reminder',
   'commands_enabled',
   'broadcast_enabled',
+  'anti_view_once_enabled',
 ];
 
 const FEATURE_LABELS = {
@@ -18,6 +19,7 @@ const FEATURE_LABELS = {
   auto_reminder: 'Auto Reminders',
   commands_enabled: 'Commands (!menu, !ping, etc.)',
   broadcast_enabled: 'Broadcast capability',
+  anti_view_once_enabled: 'Anti View Once (capture & save view-once media)',
 };
 
 async function getFeatures(botId) {

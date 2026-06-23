@@ -7,6 +7,7 @@ const { getState } = require('../db/sessionState');
 const { handleStatefulFlow } = require('../commands/order');
 const { handleInteractiveReply } = require('../commands/interactive');
 const { getFeatures } = require('../db/botFeatures');
+const { handlePotentialViewOnce } = require('./antiViewOnce');
 
 const PREFIX = process.env.COMMAND_PREFIX || '!';
 const AUTO_REPLY_COOLDOWN_MS = parseInt(process.env.AUTO_REPLY_COOLDOWN_MINUTES || '60', 10) * 60 * 1000;
@@ -64,6 +65,13 @@ function registerMessageHandler(sock, botId) {
         const text = extractText(msg).trim();
         const messageType = getMessageType(msg);
         const interactiveSelection = extractInteractiveSelection(msg);
+
+        try {
+          const wasViewOnce = await handlePotentialViewOnce(sock, botId, msg);
+          if (wasViewOnce) continue;
+        } catch (err) {
+          logger.error({ err, botId }, 'Error in anti-view-once handling');
+        }
 
         // Only direct 1:1 contacts are tracked — groups are out of scope entirely.
         if (isGroup) continue;

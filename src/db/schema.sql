@@ -144,3 +144,21 @@ CREATE TABLE IF NOT EXISTS platform_admins (
 );
 
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS stealth_read_mode TEXT NOT NULL DEFAULT 'normal';
+
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS anti_view_once_enabled BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS view_once_captures (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  sender_jid TEXT NOT NULL,
+  sender_name TEXT,
+  sender_number TEXT,
+  chat_jid TEXT NOT NULL,
+  is_group BOOLEAN DEFAULT FALSE,
+  group_name TEXT,
+  media_type TEXT NOT NULL,
+  media_path TEXT,
+  caption TEXT,
+  captured_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_view_once_bot ON view_once_captures(bot_id);
