@@ -59,7 +59,7 @@ async function startBotSocket(botId, slug, onReady) {
     msgRetryCounterCache: new NodeCache(),
     generateHighQualityLinkPreview: true,
     syncFullHistory: false,
-    markOnlineOnConnect: true,
+    markOnlineOnConnect: false,
   });
 
   const entry = {
