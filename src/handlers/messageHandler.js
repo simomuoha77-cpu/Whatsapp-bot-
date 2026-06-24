@@ -58,6 +58,14 @@ function registerMessageHandler(sock, botId) {
 
     for (const msg of messages) {
       try {
+        logger.info({
+          botId: botId,
+          hasMessage: !!msg.message,
+          messageKeys: msg.message ? Object.keys(msg.message) : null,
+          fromMe: msg.key ? msg.key.fromMe : null,
+          remoteJid: msg.key ? msg.key.remoteJid : null,
+        }, 'DEBUG: raw incoming message');
+
         if (!msg.message) continue;
         if (msg.key.remoteJid === 'status@broadcast') continue; // handled separately
         if (msg.key.fromMe) continue;
