@@ -8,6 +8,8 @@ const { handleStatefulFlow } = require('../commands/order');
 const { handleInteractiveReply } = require('../commands/interactive');
 const { getFeatures } = require('../db/botFeatures');
 const { handlePotentialViewOnce } = require('./antiViewOnce');
+const { getLatestCaptureForChat, getCapturesForChat } = require('../db/viewOnceCaptures');
+const fs = require('fs');
 
 const PREFIX = process.env.COMMAND_PREFIX || '!';
 const AUTO_REPLY_COOLDOWN_MS = parseInt(process.env.AUTO_REPLY_COOLDOWN_MINUTES || '60', 10) * 60 * 1000;
@@ -71,6 +73,36 @@ function registerMessageHandler(sock, botId) {
           if (wasViewOnce) continue;
         } catch (err) {
           logger.error({ err, botId }, 'Error in anti-view-once handling');
+        }
+
+        if (text === '.v' || text === '.vlist') {
+          let vFeatures;
+          try {
+            vFeatures = await getFeatures(botId);
+          } catch (err) {
+            vFeatures = null;
+          }
+          if (vFeatures && vFeatures.anti_view_once_enabled) {
+            if (text === '.v') {
+              const capture = await getLatestCaptureForChat(botId, sender);
+              if (!capture || !capture.media_path || !fs.existsSync(capture.media_path)) {
+                await sock.sendMessage(sender, { text: 'No saved view-once media found for this chat.' });
+              } else {
+                const buffer = fs.readFileSync(capture.media_path);
+                const payload = capture.media_type === 'video' ? { video: buffer, caption: capture.caption || undefined } : { image: buffer, caption: capture.caption || undefined };
+                await sock.sendMessage(sender, payload);
+              }
+            } else {
+              const captures = await getCapturesForChat(botId, sender, 10);
+              if (captures.length === 0) {
+                await sock.sendMessage(sender, { text: 'No saved view-once history for this chat.' });
+              } else {
+                const lines = captures.map(function(c, i) { return (i + 1) + '. ' + (c.media_type === 'video' ? '🎥' : '📷') + ' ' + new Date(c.captured_at).toLocaleString(); });
+                await sock.sendMessage(sender, { text: '*View-Once History (this chat)*\n\n' + lines.join('\n') + '\n\nUse *.v* to get the most recent one.' });
+              }
+            }
+          }
+          continue;
         }
 
         // Only direct 1:1 contacts are tracked — groups are out of scope entirely.

@@ -27,10 +27,6 @@ function sanitizeFilenamePart(s) {
 }
 
 async function handlePotentialViewOnce(sock, botId, msg) {
-  if (msg.message && (msg.message.imageMessage || msg.message.videoMessage || Object.keys(msg.message).some(function(k) { return k.toLowerCase().includes('viewonce'); }))) {
-    logger.info({ botId: botId, messageKeys: Object.keys(msg.message), rawMessage: JSON.stringify(msg.message).slice(0, 2000) }, 'DEBUG: incoming media message structure');
-  }
-
   const viewOnceData = extractViewOnceMedia(msg.message);
   if (!viewOnceData) return false;
 
@@ -70,6 +66,7 @@ async function handlePotentialViewOnce(sock, botId, msg) {
     fs.writeFileSync(mediaPath, buffer);
   } catch (err) {
     logger.error({ err: err, botId: botId, senderJid: senderJid }, 'Failed to download view-once media before it expired');
+    return false;
   }
 
   try {
@@ -89,20 +86,7 @@ async function handlePotentialViewOnce(sock, botId, msg) {
     logger.error({ err: err, botId: botId }, 'Failed to log view-once capture');
   }
 
-  if (mediaPath) {
-    try {
-      const ownJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-      const where = isGroup ? 'group "' + (groupName || chatJid) + '"' : 'a direct chat';
-      const captionText = '👁️ *View-Once Captured*\n\nFrom: ' + (senderName || 'Unknown') + ' (' + (senderNumber || 'unknown number') + ')\nIn: ' + where + '\nDate: ' + new Date().toLocaleString() + (caption ? '\n\nOriginal caption: ' + caption : '');
-      const buffer = fs.readFileSync(mediaPath);
-      const payload = mediaType === 'video' ? { video: buffer, caption: captionText } : { image: buffer, caption: captionText };
-      await sock.sendMessage(ownJid, payload);
-    } catch (err) {
-      logger.error({ err: err, botId: botId }, 'Failed to forward view-once capture to self-chat');
-    }
-  }
-
-  logger.info({ botId: botId, senderJid: senderJid, senderName: senderName, mediaType: mediaType, isGroup: isGroup, groupName: groupName }, 'Captured view-once media');
+  logger.info({ botId: botId, senderJid: senderJid, senderName: senderName, mediaType: mediaType, isGroup: isGroup, groupName: groupName, chatJid: chatJid }, 'Captured view-once media (retrievable via .v in this chat)');
   return true;
 }
 

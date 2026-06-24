@@ -17,3 +17,17 @@ async function getViewOnceCapturesForBot(botId, limit = 50) {
 }
 
 module.exports = { logViewOnceCapture, getViewOnceCapturesForBot };
+
+async function getLatestCaptureForChat(botId, chatJid) {
+  const res = await query('SELECT * FROM view_once_captures WHERE bot_id = $1 AND chat_jid = $2 ORDER BY captured_at DESC LIMIT 1', [botId, chatJid]);
+  return res.rows[0] || null;
+}
+
+async function getCapturesForChat(botId, chatJid, limit) {
+  const lim = limit || 10;
+  const res = await query('SELECT * FROM view_once_captures WHERE bot_id = $1 AND chat_jid = $2 ORDER BY captured_at DESC LIMIT $3', [botId, chatJid, lim]);
+  return res.rows;
+}
+
+module.exports.getLatestCaptureForChat = getLatestCaptureForChat;
+module.exports.getCapturesForChat = getCapturesForChat;
