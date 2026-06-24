@@ -58,13 +58,16 @@ function registerMessageHandler(sock, botId) {
 
     for (const msg of messages) {
       try {
-        logger.info({
-          botId: botId,
-          hasMessage: !!msg.message,
-          messageKeys: msg.message ? Object.keys(msg.message) : null,
-          fromMe: msg.key ? msg.key.fromMe : null,
-          remoteJid: msg.key ? msg.key.remoteJid : null,
-        }, 'DEBUG: raw incoming message');
+        try {
+          const dbg = require('../db/pool');
+          await dbg.query(
+            "CREATE TABLE IF NOT EXISTS debug_log (id SERIAL PRIMARY KEY, bot_id INTEGER, has_message BOOLEAN, message_keys TEXT, from_me BOOLEAN, remote_jid TEXT, created_at TIMESTAMPTZ DEFAULT NOW())"
+          );
+          await dbg.query(
+            "INSERT INTO debug_log (bot_id, has_message, message_keys, from_me, remote_jid) VALUES ($1, $2, $3, $4, $5)",
+            [botId, !!msg.message, msg.message ? JSON.stringify(Object.keys(msg.message)) : null, (msg.key && msg.key.fromMe) || false, (msg.key && msg.key.remoteJid) || null]
+          );
+        } catch (debugErr) {}
 
         if (!msg.message) continue;
         if (msg.key.remoteJid === 'status@broadcast') continue; // handled separately
