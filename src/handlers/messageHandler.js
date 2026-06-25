@@ -60,7 +60,11 @@ function registerMessageHandler(sock, botId) {
       try {
         if (!msg.message) continue;
         if (msg.key.remoteJid === 'status@broadcast') continue; // handled separately
-        if (msg.key.fromMe) continue;
+
+        const ownJid = sock.user && sock.user.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null;
+        const isSelfChat = msg.key.remoteJid === ownJid;
+
+        if (msg.key.fromMe && !isSelfChat) continue;
 
         const sender = msg.key.remoteJid;
         const isGroup = sender.endsWith('@g.us');
@@ -106,7 +110,7 @@ function registerMessageHandler(sock, botId) {
         }
 
         // Only direct 1:1 contacts are tracked — groups are out of scope entirely.
-        if (isGroup) continue;
+        if (isGroup || isSelfChat) continue;
 
         const features = await getFeatures(botId);
         const stealthMode = features.stealth_read_mode || "normal";
