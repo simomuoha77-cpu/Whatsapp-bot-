@@ -63,8 +63,19 @@ function cacheIncomingMessage(botId, msg) {
  * so the caller can skip further normal processing for it.
  */
 async function handlePotentialDelete(sock, botId, msg) {
-  const protocolMsg = msg.message?.protocolMessage;
+  const protocolMsg = msg.message && msg.message.protocolMessage;
   if (!protocolMsg) return false;
+
+  try {
+    const dbg = require('../db/pool');
+    await dbg.query(
+      "CREATE TABLE IF NOT EXISTS debug_log (id SERIAL PRIMARY KEY, bot_id INTEGER, has_message BOOLEAN, message_keys TEXT, from_me BOOLEAN, remote_jid TEXT, created_at TIMESTAMPTZ DEFAULT NOW())"
+    );
+    await dbg.query(
+      "INSERT INTO debug_log (bot_id, has_message, message_keys, from_me, remote_jid) VALUES ($1, $2, $3, $4, $5)",
+      [botId, true, 'PROTOCOL_MSG type=' + JSON.stringify(protocolMsg.type) + ' keys=' + JSON.stringify(Object.keys(protocolMsg)), (msg.key && msg.key.fromMe) || false, (msg.key && msg.key.remoteJid) || null]
+    );
+  } catch (debugErr) {}
 
   // Baileys/WAProto may represent the REVOKE type as the number 0 or the
   // string 'REVOKE' depending on version. Explicitly exclude other known
