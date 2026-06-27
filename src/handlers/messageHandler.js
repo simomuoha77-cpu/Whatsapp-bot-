@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const commands = require('../commands/index');
-const { upsertContact, isBlocked } = require('../db/contacts');
+const { upsertContact, isBlocked, getContact } = require('../db/contacts');
 const { logMessage } = require('../db/messages');
 const { logCommand } = require('../db/logs');
 const { getState } = require('../db/sessionState');
@@ -9,6 +9,11 @@ const { handleInteractiveReply } = require('../commands/interactive');
 const { getFeatures } = require('../db/botFeatures');
 const { handlePotentialViewOnce } = require('./antiViewOnce');
 const { getLatestCaptureForChat, getCapturesForChat } = require('../db/viewOnceCaptures');
+const { cacheIncomingMessage, handlePotentialDelete } = require('./antiDelete');
+const { getKeywordResponses, matchKeyword } = require('../db/keywordResponses');
+const { generateAiReply } = require('../utils/aiProvider');
+const { addChatMessage, getRecentHistory } = require('../db/aiChatHistory');
+const { maybeSubscribeToPresence } = require('./presenceHandler');
 const fs = require('fs');
 
 const PREFIX = process.env.COMMAND_PREFIX || '!';
@@ -61,9 +66,14 @@ function registerMessageHandler(sock, botId) {
         if (!msg.message) continue;
         if (msg.key.remoteJid === 'status@broadcast') continue; // handled separately
 
-        const ownJid = sock.user && sock.user.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null;
+        const ownJid = sock.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null;
         const isSelfChat = msg.key.remoteJid === ownJid;
 
+        // Normally we ignore everything the bot itself sent (fromMe), to
+        // avoid reply loops. The one exception: messages sent in the bot's
+        // own self-chat ("Message Yourself"), since that's the one place
+        // fromMe is expected to be true for messages the owner is
+        // deliberately sending TO the bot for retrieval commands like .v.
         if (msg.key.fromMe && !isSelfChat) continue;
 
         const sender = msg.key.remoteJid;
@@ -72,28 +82,55 @@ function registerMessageHandler(sock, botId) {
         const messageType = getMessageType(msg);
         const interactiveSelection = extractInteractiveSelection(msg);
 
+        // Anti View Once runs before the group/direct split below, since
+        // it's the one feature that's explicitly in scope for groups too —
+        // everything else (commands, auto-reply, etc.) stays direct-chat-only.
         try {
           const wasViewOnce = await handlePotentialViewOnce(sock, botId, msg);
-          if (wasViewOnce) continue;
+          if (wasViewOnce) continue; // nothing else to do with a view-once message
         } catch (err) {
           logger.error({ err, botId }, 'Error in anti-view-once handling');
         }
 
+        // Anti Delete: check if this message is a delete notification
+        // (referencing an earlier cached message), before any other
+        // filtering — deletes can happen in groups and self-chat too.
+        try {
+          const wasDelete = await handlePotentialDelete(sock, botId, msg);
+          if (wasDelete) continue;
+        } catch (err) {
+          logger.error({ err, botId }, 'Error in anti-delete handling');
+        }
+        // Cache this message in memory in case it gets deleted shortly
+        // after — done for every message regardless of whether anti-delete
+        // is currently enabled, so toggling it on later still catches
+        // messages cached during this same process's lifetime.
+        cacheIncomingMessage(botId, msg);
+
+        // .v and .vlist are core to the Anti View Once feature itself, so
+        // they work independently of the general commands_enabled toggle —
+        // they're only gated by anti_view_once_enabled. Only the bot owner
+        // (i.e. messages in their own direct chats) can use them, and .v
+        // always returns the latest capture from THIS specific chat only.
         if (text === '.v' || text === '.vlist') {
-          let vFeatures;
+          let viewOnceFeatures;
           try {
-            vFeatures = await getFeatures(botId);
+            viewOnceFeatures = await getFeatures(botId);
           } catch (err) {
-            vFeatures = null;
+            viewOnceFeatures = null;
           }
-          if (vFeatures && vFeatures.anti_view_once_enabled) {
+
+          if (viewOnceFeatures && viewOnceFeatures.anti_view_once_enabled) {
             if (text === '.v') {
               const capture = await getLatestCaptureForChat(botId, sender);
               if (!capture || !capture.media_path || !fs.existsSync(capture.media_path)) {
                 await sock.sendMessage(sender, { text: 'No saved view-once media found for this chat.' });
               } else {
                 const buffer = fs.readFileSync(capture.media_path);
-                const payload = capture.media_type === 'video' ? { video: buffer, caption: capture.caption || undefined } : { image: buffer, caption: capture.caption || undefined };
+                const payload =
+                  capture.media_type === 'video'
+                    ? { video: buffer, caption: capture.caption || undefined }
+                    : { image: buffer, caption: capture.caption || undefined };
                 await sock.sendMessage(sender, payload);
               }
             } else {
@@ -101,35 +138,51 @@ function registerMessageHandler(sock, botId) {
               if (captures.length === 0) {
                 await sock.sendMessage(sender, { text: 'No saved view-once history for this chat.' });
               } else {
-                const lines = captures.map(function(c, i) { return (i + 1) + '. ' + (c.media_type === 'video' ? '🎥' : '📷') + ' ' + new Date(c.captured_at).toLocaleString(); });
-                await sock.sendMessage(sender, { text: '*View-Once History (this chat)*\n\n' + lines.join('\n') + '\n\nUse *.v* to get the most recent one.' });
+                const lines = captures.map((c, i) =>
+                  `${i + 1}. ${c.media_type === 'video' ? '🎥' : '📷'} ${new Date(c.captured_at).toLocaleString()}`
+                );
+                await sock.sendMessage(sender, {
+                  text: `*View-Once History (this chat)*\n\n${lines.join('\n')}\n\nUse *.v* to get the most recent one.`,
+                });
               }
             }
           }
-          continue;
+          continue; // .v / .vlist never fall through to normal command processing
         }
 
         // Only direct 1:1 contacts are tracked — groups are out of scope entirely.
+        // Self-chat is also excluded here: it's only ever used for .v/.vlist
+        // retrieval above, never for normal auto-reply/command processing.
         if (isGroup || isSelfChat) continue;
 
         const features = await getFeatures(botId);
-        const stealthMode = features.stealth_read_mode || "normal";
+        const stealthMode = features.stealth_read_mode || 'normal';
 
-        await upsertContact(botId, sender, msg.pushName);
+        const contactRecord = await upsertContact(botId, sender, msg.pushName);
+        const isFirstMessageFromContact = contactRecord && contactRecord.message_count === 1;
+
+        // Best-effort, fire-and-forget — don't block message processing on this.
+        maybeSubscribeToPresence(sock, botId, sender).catch(() => {});
 
         if (await isBlocked(botId, sender)) continue;
 
-        if (stealthMode === "normal") {
+        // Stealth Read Mode controls whether we ever tell WhatsApp this
+        // message was read. 'normal' marks it read like a regular client
+        // would. 'stealth' and 'no_mark' both skip this entirely — the bot
+        // still fully processes the message and can auto-reply, but the
+        // sender never gets the blue double-tick, only the regular grey
+        // sent/delivered ticks.
+        if (stealthMode === 'normal') {
           try {
             await sock.readMessages([msg.key]);
           } catch (err) {
-            logger.warn({ err, botId, sender }, "Failed to mark message as read");
+            logger.warn({ err, botId, sender }, 'Failed to mark message as read');
           }
         }
 
         const reply = async (content) => {
           const payload = typeof content === 'string' ? { text: content } : content;
-          const sentMsg = await sock.sendMessage(sender, payload);
+          await sock.sendMessage(sender, payload);
           await logMessage({
             botId,
             jid: sender,
@@ -137,13 +190,6 @@ function registerMessageHandler(sock, botId) {
             messageType: typeof content === 'string' ? 'text' : Object.keys(content)[0],
             body: typeof content === 'string' ? content : JSON.stringify(content),
           });
-          try {
-            if (sentMsg) {
-              await sock.chatModify({ markRead: false, lastMessages: [sentMsg] }, sender);
-            }
-          } catch (err) {
-            logger.warn({ err, botId, sender }, 'Failed to restore unread state after reply');
-          }
         };
 
         await logMessage({
@@ -154,6 +200,17 @@ function registerMessageHandler(sock, botId) {
           messageType,
           body: text || null,
         });
+        // Internal bookkeeping: regardless of stealth mode, we always know
+        // and record that the bot itself has processed this message — the
+        // mode only controls whether WhatsApp's read receipt is sent to
+        // the other person, not whether the bot considers it "read."
+        logger.debug({ botId, sender, stealthMode, statusId: msg.key.id }, 'Message processed internally as read');
+
+        // Welcome Message: sent once, the very first time a contact messages
+        // this bot. Independent of Auto Reply, which can fire repeatedly.
+        if (features.welcome_message_enabled && isFirstMessageFromContact) {
+          await reply(features.welcome_message_text || 'Welcome! Thanks for messaging us.');
+        }
 
         // Auto-reply (away message) — only if this bot has the feature enabled.
         if (features.auto_reply) {
@@ -173,6 +230,47 @@ function registerMessageHandler(sock, botId) {
         }
 
         if (!text) continue;
+
+        // Keyword Responses and AI Chat both operate on plain text that
+        // isn't a !-prefixed command, and are independent of the general
+        // commands_enabled toggle — a bot can have commands off but still
+        // respond to keywords or chat with AI.
+        if (!text.startsWith(PREFIX)) {
+          if (features.keyword_responses_enabled) {
+            try {
+              const keywordList = await getKeywordResponses(botId);
+              const match = matchKeyword(keywordList, text);
+              if (match) {
+                await reply(match.response);
+                continue;
+              }
+            } catch (err) {
+              logger.warn({ err, botId }, 'Keyword response lookup failed');
+            }
+          }
+
+          if (features.ai_chat_enabled) {
+            try {
+              const history = await getRecentHistory(botId, sender, 10);
+              const aiReply = await generateAiReply({
+                provider: features.ai_provider || 'groq',
+                systemPrompt: features.ai_system_prompt || 'You are a helpful assistant responding to WhatsApp messages. Keep replies concise.',
+                history,
+                userMessage: text,
+                botId,
+              });
+              if (aiReply) {
+                await addChatMessage(botId, sender, 'user', text);
+                await addChatMessage(botId, sender, 'assistant', aiReply);
+                await reply(aiReply);
+                continue;
+              }
+              logger.warn({ botId, sender }, 'AI reply generation returned null, falling through');
+            } catch (err) {
+              logger.error({ err, botId }, 'AI chat handling failed');
+            }
+          }
+        }
 
         // Commands and stateful flows are gated by commands_enabled — if a
         // client's bot is set to "auto-status-viewing only," typed commands

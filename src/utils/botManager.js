@@ -113,6 +113,12 @@ async function startBotSocket(botId, slug, onReady) {
       });
       logger.info({ botId, ownNumber }, 'Bot connected to WhatsApp');
 
+      // Apply the account-wide read receipts privacy setting based on this
+      // bot's Stealth Read Mode. This is the real, WhatsApp-enforced switch
+      // (the same one under Settings > Privacy > Read Receipts) — far more
+      // reliable than only skipping our own readMessages() call, since it's
+      // honored by WhatsApp's servers directly rather than depending on us
+      // catching every code path that could trigger a receipt.
       try {
         const { getFeatures } = require('../db/botFeatures');
         const features = await getFeatures(botId);

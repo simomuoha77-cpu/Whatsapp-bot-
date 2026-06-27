@@ -101,6 +101,98 @@ Turning everything off except "Auto Status Viewing" gives you exactly the
 "client only wants status viewing" bot you described — commands won't
 respond, no reactions, nothing else happens, just silent status viewing.
 
+## Stealth Read Mode
+
+Each client's bot also has a **Stealth Read Mode** setting, controlling
+whether incoming messages get marked as "read" (the blue double-tick) on
+the sender's side:
+
+- **Normal** — behaves like a regular WhatsApp client; messages are marked
+  read as usual, sender sees blue ticks.
+- **Stealth** — the bot still fully reads and processes every message
+  (auto-reply, commands, everything works normally), but never sends the
+  read receipt back to WhatsApp. The sender only ever sees grey ticks
+  (sent/delivered), never blue.
+- **No-Mark** — functionally the same as Stealth (auto-reply works,
+  messages are simply never marked read).
+
+Set this per client from `/admin` → click into the bot → **Stealth Read
+Mode** dropdown.
+
+## Anti View Once
+
+When enabled per-client, the bot automatically detects view-once photos
+and videos (in both direct chats and groups) and silently downloads/saves
+them before they expire — no notification is sent to the sender. Files
+are saved to `downloads/view-once/` on the server; every capture is
+logged with sender name/number, chat, and timestamp.
+
+**Retrieval is on-demand, from inside the same chat where it was received:**
+- `.v` — sends back the most recently captured view-once media **from
+  that specific chat** as a normal (non-view-once) photo/video, so it can
+  be viewed repeatedly, downloaded, saved, or forwarded freely.
+- `.vlist` — shows a numbered history of recent captures in that chat.
+
+These two commands work independently of the bot's `!`-prefixed command
+system and the `commands_enabled` toggle — they're gated solely by
+`anti_view_once_enabled`, since they're core to this specific feature.
+Only the bot owner (messaging their own connected number) can trigger
+them, and `.v` only ever returns captures from the exact chat it's typed
+in — it can't pull a capture from a different conversation.
+
+The full capture log (across all chats) is also viewable from `/admin` →
+the bot's page → **View-Once Captures**.
+
+**⚠️ Important to understand before enabling this for a client:** View
+Once exists specifically because the sender chose that mode, expecting
+the recipient to see it exactly once. Capturing it without the sender's
+knowledge is exactly the kind of behavior WhatsApp's anti-abuse systems
+watch for, and in some places may carry real privacy/legal implications —
+similar in spirit to recording someone without consent. This is off by
+default (`anti_view_once_enabled` defaults to `false`); enabling it for a
+client is a deliberate choice you and they should make with that in mind.
+
+## New features (messaging, privacy, AI)
+
+All toggleable per-client from `/admin` → the bot's page → **Features for
+this client**, same as everything else.
+
+- **Welcome Message** — sent once, automatically, the first time a contact
+  ever messages the bot. Independent of Auto Reply, which can fire
+  repeatedly on a cooldown.
+- **Away Message** — a dedicated message/toggle separate from Auto Reply,
+  for a clearer "currently away" framing if you want both configured
+  differently.
+- **Keyword Responses** — admin-defined keyword → response pairs (e.g.
+  "price" → your pricing info). Matched as a case-insensitive substring of
+  the incoming message. Manage them from the bot's dashboard page.
+- **Anti Delete** — works like Anti View Once: every message is cached in
+  memory briefly when it arrives, and if WhatsApp signals it was deleted
+  shortly after, the cached copy (text or downloaded media) is logged and
+  forwarded to the bot's own "Message Yourself" chat. Only catches deletes
+  that happen while the bot process is running and within a ~30 minute
+  window of the original message.
+- **Auto Status Saving** — downloads a copy of contacts' status
+  photos/videos to disk, separate from (and in addition to) the existing
+  status viewing/reacting features. Viewable from the bot's dashboard page.
+- **AI Chat Assistant** — when enabled, the bot replies to plain-text
+  messages (anything not starting with the command prefix, and not
+  matching a keyword response) using an AI provider. Supports **Groq** or
+  **Gemini** — set `GROQ_API_KEY` and/or `GEMINI_API_KEY` in your
+  environment, then pick the provider and customize the system
+  prompt/personality per bot from the dashboard. Keeps short conversation
+  history per contact for context. If the AI call fails (missing key, API
+  down), the bot falls through to its normal fallback response rather than
+  going silent.
+- **Online/Offline + Last Seen Tracking** — subscribes to presence updates
+  for contacts who message the bot, logging status changes (online,
+  offline, typing, last-seen timestamp) to the database. Important
+  caveat: this only works for contacts whose own WhatsApp privacy settings
+  allow their presence to be visible at all — if someone has "Last Seen &
+  Online" set to nobody/contacts-only (and the bot isn't in that list),
+  WhatsApp simply never sends presence updates for them, regardless of
+  anything this code does.
+
 ## Known limitations
 
 - No payment/subscription system — this manages bot access, not billing.

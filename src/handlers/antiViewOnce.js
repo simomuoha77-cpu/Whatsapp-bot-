@@ -8,17 +8,34 @@ const { logViewOnceCapture } = require('../db/viewOnceCaptures');
 const MEDIA_ROOT = path.join(__dirname, '..', '..', 'downloads', 'view-once');
 if (!fs.existsSync(MEDIA_ROOT)) fs.mkdirSync(MEDIA_ROOT, { recursive: true });
 
+/**
+ * Unwraps a message to find view-once media, regardless of which of the
+ * several WhatsApp wrapper formats it arrived in. Modern clients sometimes
+ * send a direct imageMessage/videoMessage with viewOnce: true set on the
+ * media object itself, rather than wrapping it — both forms are checked.
+ *
+ * Returns { mediaType: 'image'|'video', mediaMessage, caption } or null
+ * if this message isn't a view-once.
+ */
 function extractViewOnceMedia(message) {
   if (!message) return null;
-  const wrapper = message.viewOnceMessage || message.viewOnceMessageV2 || message.viewOnceMessageV2Extension;
+
+  // Wrapped forms: viewOnceMessage / viewOnceMessageV2 / viewOnceMessageV2Extension
+  const wrapper =
+    message.viewOnceMessage ||
+    message.viewOnceMessageV2 ||
+    message.viewOnceMessageV2Extension;
+
   const inner = wrapper ? wrapper.message : message;
   if (!inner) return null;
+
   if (inner.imageMessage && (wrapper || inner.imageMessage.viewOnce)) {
     return { mediaType: 'image', mediaMessage: inner.imageMessage, caption: inner.imageMessage.caption || null };
   }
   if (inner.videoMessage && (wrapper || inner.videoMessage.viewOnce)) {
     return { mediaType: 'video', mediaMessage: inner.videoMessage, caption: inner.videoMessage.caption || null };
   }
+
   return null;
 }
 
@@ -26,6 +43,16 @@ function sanitizeFilenamePart(s) {
   return (s || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
 }
 
+/**
+ * Checks an incoming message for view-once media. If found and the bot's
+ * anti_view_once_enabled feature is on, downloads and saves it silently
+ * before it expires, logging sender/chat details. Retrieval happens later,
+ * on demand, via the .v command — not by forwarding immediately.
+ *
+ * Returns true if this message was a view-once and was captured, false
+ * otherwise. The caller can use this to skip further normal processing
+ * for genuine view-once messages.
+ */
 async function handlePotentialViewOnce(sock, botId, msg) {
   const viewOnceData = extractViewOnceMedia(msg.message);
   if (!viewOnceData) return false;
@@ -34,13 +61,13 @@ async function handlePotentialViewOnce(sock, botId, msg) {
   try {
     features = await getFeatures(botId);
   } catch (err) {
-    logger.warn({ err: err, botId: botId }, 'Failed to load features for anti-view-once check');
+    logger.warn({ err, botId }, 'Failed to load features for anti-view-once check');
     return false;
   }
+
   if (!features.anti_view_once_enabled) return false;
 
-  const mediaType = viewOnceData.mediaType;
-  const caption = viewOnceData.caption;
+  const { mediaType, caption } = viewOnceData;
   const chatJid = msg.key.remoteJid;
   const isGroup = chatJid.endsWith('@g.us');
   const senderJid = msg.key.participant || (isGroup ? null : chatJid) || chatJid;
@@ -51,43 +78,48 @@ async function handlePotentialViewOnce(sock, botId, msg) {
   if (isGroup) {
     try {
       const meta = await sock.groupMetadata(chatJid);
-      groupName = meta && meta.subject ? meta.subject : null;
+      groupName = meta?.subject || null;
     } catch (err) {
-      logger.warn({ err: err, botId: botId, chatJid: chatJid }, 'Failed to fetch group metadata');
+      logger.warn({ err, botId, chatJid }, 'Failed to fetch group metadata for view-once log');
     }
   }
 
   let mediaPath = null;
   try {
-    const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: logger });
+    // Download before WhatsApp expires/removes the underlying media.
+    const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger });
     const ext = mediaType === 'video' ? 'mp4' : 'jpg';
-    const filename = Date.now() + '_' + sanitizeFilenamePart(senderNumber) + '.' + ext;
+    const filename = `${Date.now()}_${sanitizeFilenamePart(senderNumber)}.${ext}`;
     mediaPath = path.join(MEDIA_ROOT, filename);
     fs.writeFileSync(mediaPath, buffer);
   } catch (err) {
-    logger.error({ err: err, botId: botId, senderJid: senderJid }, 'Failed to download view-once media before it expired');
-    return false;
+    logger.error({ err, botId, senderJid }, 'Failed to download view-once media before it expired');
+    return false; // nothing useful to log if we couldn't even save the file
   }
 
   try {
     await logViewOnceCapture({
-      botId: botId,
-      senderJid: senderJid,
-      senderName: senderName,
-      senderNumber: senderNumber,
-      chatJid: chatJid,
-      isGroup: isGroup,
-      groupName: groupName,
-      mediaType: mediaType,
-      mediaPath: mediaPath,
-      caption: caption
+      botId,
+      senderJid,
+      senderName,
+      senderNumber,
+      chatJid,
+      isGroup,
+      groupName,
+      mediaType,
+      mediaPath,
+      caption,
     });
   } catch (err) {
-    logger.error({ err: err, botId: botId }, 'Failed to log view-once capture');
+    logger.error({ err, botId }, 'Failed to log view-once capture to database');
   }
 
-  logger.info({ botId: botId, senderJid: senderJid, senderName: senderName, mediaType: mediaType, isGroup: isGroup, groupName: groupName, chatJid: chatJid }, 'Captured view-once media (retrievable via .v in this chat)');
+  logger.info(
+    { botId, senderJid, senderName, mediaType, isGroup, groupName, chatJid },
+    'Captured view-once media (retrievable via .v in this chat)'
+  );
+
   return true;
 }
 
-module.exports = { handlePotentialViewOnce: handlePotentialViewOnce, extractViewOnceMedia: extractViewOnceMedia };
+module.exports = { handlePotentialViewOnce, extractViewOnceMedia };

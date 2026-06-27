@@ -9,6 +9,13 @@ const FEATURE_COLUMNS = [
   'commands_enabled',
   'broadcast_enabled',
   'anti_view_once_enabled',
+  'anti_delete_enabled',
+  'welcome_message_enabled',
+  'away_message_enabled',
+  'keyword_responses_enabled',
+  'auto_status_save_enabled',
+  'ai_chat_enabled',
+  'presence_tracking_enabled',
 ];
 
 const FEATURE_LABELS = {
@@ -20,7 +27,24 @@ const FEATURE_LABELS = {
   commands_enabled: 'Commands (!menu, !ping, etc.)',
   broadcast_enabled: 'Broadcast capability',
   anti_view_once_enabled: 'Anti View Once (capture & save view-once media)',
+  anti_delete_enabled: 'Anti Delete (capture messages/status before deletion)',
+  welcome_message_enabled: 'Welcome Message (first-time contacts)',
+  away_message_enabled: 'Away Message',
+  keyword_responses_enabled: 'Keyword Responses',
+  auto_status_save_enabled: 'Auto Status Saving (download status media)',
+  ai_chat_enabled: 'AI Chat Assistant',
+  presence_tracking_enabled: 'Online/Offline + Last Seen Tracking',
 };
+
+const STEALTH_READ_MODES = ['normal', 'stealth', 'no_mark'];
+
+const STEALTH_READ_MODE_LABELS = {
+  normal: 'Normal (read messages normally, sends read receipts)',
+  stealth: 'Stealth (read & auto-reply, but never send read receipts)',
+  no_mark: 'No-Mark (auto-reply works, messages never marked as read)',
+};
+
+const AI_PROVIDERS = ['groq', 'gemini'];
 
 async function getFeatures(botId) {
   const res = await query('SELECT * FROM bot_features WHERE bot_id = $1', [botId]);
@@ -53,15 +77,45 @@ async function setAutoReplyMessage(botId, message) {
   );
 }
 
+async function setWelcomeMessage(botId, message) {
+  await getFeatures(botId);
+  await query(
+    `UPDATE bot_features SET welcome_message_text = $1, updated_at = NOW() WHERE bot_id = $2`,
+    [message, botId]
+  );
+}
 
-const STEALTH_READ_MODES = ["normal", "stealth", "no_mark"];
-const STEALTH_READ_MODE_LABELS = {
-  normal: "Normal (sends read receipts)",
-  stealth: "Stealth (no read receipts, auto-reply works)",
-  no_mark: "No-Mark (auto-reply works, never marked read)",
-};
+async function setAwayMessage(botId, message) {
+  await getFeatures(botId);
+  await query(
+    `UPDATE bot_features SET away_message_text = $1, updated_at = NOW() WHERE bot_id = $2`,
+    [message, botId]
+  );
+}
+
+async function setAiProvider(botId, provider) {
+  if (!AI_PROVIDERS.includes(provider)) {
+    throw new Error(`Unknown AI provider "${provider}". Valid: ${AI_PROVIDERS.join(', ')}`);
+  }
+  await getFeatures(botId);
+  await query(
+    `UPDATE bot_features SET ai_provider = $1, updated_at = NOW() WHERE bot_id = $2`,
+    [provider, botId]
+  );
+}
+
+async function setAiSystemPrompt(botId, prompt) {
+  await getFeatures(botId);
+  await query(
+    `UPDATE bot_features SET ai_system_prompt = $1, updated_at = NOW() WHERE bot_id = $2`,
+    [prompt, botId]
+  );
+}
 
 async function setStealthReadMode(botId, mode) {
+  if (!STEALTH_READ_MODES.includes(mode)) {
+    throw new Error(`Unknown stealth read mode "${mode}". Valid: ${STEALTH_READ_MODES.join(', ')}`);
+  }
   await getFeatures(botId);
   await query(
     `UPDATE bot_features SET stealth_read_mode = $1, updated_at = NOW() WHERE bot_id = $2`,
@@ -72,10 +126,15 @@ async function setStealthReadMode(botId, mode) {
 module.exports = {
   FEATURE_COLUMNS,
   FEATURE_LABELS,
+  STEALTH_READ_MODES,
+  STEALTH_READ_MODE_LABELS,
+  AI_PROVIDERS,
   getFeatures,
   setFeature,
   setAutoReplyMessage,
+  setWelcomeMessage,
+  setAwayMessage,
+  setAiProvider,
+  setAiSystemPrompt,
   setStealthReadMode,
-  STEALTH_READ_MODES,
-  STEALTH_READ_MODE_LABELS,
 };

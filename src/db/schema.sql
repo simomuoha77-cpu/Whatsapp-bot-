@@ -26,6 +26,30 @@ CREATE TABLE IF NOT EXISTS bot_features (
   auto_reminder BOOLEAN DEFAULT FALSE,
   commands_enabled BOOLEAN DEFAULT TRUE,  -- whether !menu/!ping/etc respond at all
   broadcast_enabled BOOLEAN DEFAULT FALSE,
+  -- Stealth Read Mode controls whether incoming chat messages get marked
+  -- as read (triggering blue ticks) on the sender's side.
+  --   'normal'  - read messages normally, sends read receipts as usual
+  --   'stealth' - bot reads/processes messages and can still auto-reply,
+  --               but never sends a read receipt, so the sender only ever
+  --               sees grey ticks (sent/delivered), never blue (read)
+  --   'no_mark' - same as stealth; messages are simply never marked read
+  stealth_read_mode TEXT NOT NULL DEFAULT 'normal',
+  -- Anti View Once: automatically captures view-once photos/videos before
+  -- they expire, saving a copy and forwarding it to the bot's own
+  -- "Message Yourself" chat. Off by default given the privacy implications.
+  anti_view_once_enabled BOOLEAN DEFAULT FALSE,
+  -- New feature toggles
+  anti_delete_enabled BOOLEAN DEFAULT FALSE,         -- capture messages/status before deletion
+  welcome_message_enabled BOOLEAN DEFAULT FALSE,
+  welcome_message_text TEXT DEFAULT 'Welcome! Thanks for messaging us.',
+  away_message_enabled BOOLEAN DEFAULT FALSE,
+  away_message_text TEXT DEFAULT 'We''re currently away and will respond soon.',
+  keyword_responses_enabled BOOLEAN DEFAULT FALSE,
+  auto_status_save_enabled BOOLEAN DEFAULT FALSE,    -- download status media (separate from viewing/reacting)
+  ai_chat_enabled BOOLEAN DEFAULT FALSE,
+  ai_provider TEXT DEFAULT 'groq',                   -- 'groq' or 'gemini'
+  ai_system_prompt TEXT DEFAULT 'You are a helpful assistant responding to WhatsApp messages. Keep replies concise.',
+  presence_tracking_enabled BOOLEAN DEFAULT FALSE,   -- online/offline + last-seen logging
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -134,6 +158,95 @@ CREATE TABLE IF NOT EXISTS bot_auth_state (
   PRIMARY KEY (bot_id, key_type, key_id)
 );
 
+-- Log of every view-once photo/video the bot has captured, per client bot.
+CREATE TABLE IF NOT EXISTS view_once_captures (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  sender_jid TEXT NOT NULL,
+  sender_name TEXT,
+  sender_number TEXT,
+  chat_jid TEXT NOT NULL,        -- where it was sent: a direct chat or a group
+  is_group BOOLEAN DEFAULT FALSE,
+  group_name TEXT,                -- populated only when is_group is true
+  media_type TEXT NOT NULL,       -- 'image' or 'video'
+  media_path TEXT,                -- saved file location on disk
+  caption TEXT,
+  captured_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_view_once_bot ON view_once_captures(bot_id);
+
+-- Keyword -> response pairs, per bot. Admin-configurable via dashboard.
+CREATE TABLE IF NOT EXISTS keyword_responses (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  keyword TEXT NOT NULL,        -- matched as case-insensitive substring
+  response TEXT NOT NULL,
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_keyword_responses_bot ON keyword_responses(bot_id);
+
+-- Captures messages and statuses just before/when WhatsApp signals they
+-- were deleted, so the content isn't lost. Works the same way Anti View
+-- One does: we cache content when it first arrives, and only display "it
+-- was deleted" notices alongside the cached copy when a delete event fires.
+CREATE TABLE IF NOT EXISTS deleted_message_captures (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  source_type TEXT NOT NULL,     -- 'message' or 'status'
+  sender_jid TEXT NOT NULL,
+  sender_name TEXT,
+  sender_number TEXT,
+  chat_jid TEXT NOT NULL,
+  is_group BOOLEAN DEFAULT FALSE,
+  group_name TEXT,
+  message_type TEXT NOT NULL,    -- text, image, video, audio, document, sticker
+  body TEXT,
+  media_path TEXT,
+  deleted_at TIMESTAMPTZ DEFAULT NOW(),
+  original_sent_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_deleted_captures_bot ON deleted_message_captures(bot_id);
+
+-- Downloaded copies of contacts' status media, separate from the
+-- view+react log (status_log) — this is specifically for keeping the
+-- actual files, gated by auto_status_save_enabled.
+CREATE TABLE IF NOT EXISTS status_saves (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  contact_jid TEXT NOT NULL,
+  contact_name TEXT,
+  media_type TEXT NOT NULL,
+  media_path TEXT,
+  caption TEXT,
+  saved_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_status_saves_bot ON status_saves(bot_id);
+
+-- Presence (online/offline) and last-seen tracking, per contact. Only
+-- populated for contacts whose own privacy settings allow it to be seen.
+CREATE TABLE IF NOT EXISTS presence_log (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  contact_jid TEXT NOT NULL,
+  presence_status TEXT NOT NULL,  -- 'available', 'composing', 'unavailable', etc.
+  last_seen_at TIMESTAMPTZ,
+  recorded_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (bot_id, contact_jid)
+);
+
+-- AI chat conversation history, per bot+contact, so the assistant has
+-- short-term context across messages in the same conversation.
+CREATE TABLE IF NOT EXISTS ai_chat_history (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  contact_jid TEXT NOT NULL,
+  role TEXT NOT NULL,            -- 'user' or 'assistant'
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_history_bot_contact ON ai_chat_history(bot_id, contact_jid);
+
 -- Platform admin (you) login for the master dashboard. Single row in practice,
 -- but modeled as a table in case you ever want more than one admin login.
 CREATE TABLE IF NOT EXISTS platform_admins (
@@ -142,23 +255,3 @@ CREATE TABLE IF NOT EXISTS platform_admins (
   password_hash TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
-ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS stealth_read_mode TEXT NOT NULL DEFAULT 'normal';
-
-ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS anti_view_once_enabled BOOLEAN DEFAULT FALSE;
-
-CREATE TABLE IF NOT EXISTS view_once_captures (
-  id SERIAL PRIMARY KEY,
-  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  sender_jid TEXT NOT NULL,
-  sender_name TEXT,
-  sender_number TEXT,
-  chat_jid TEXT NOT NULL,
-  is_group BOOLEAN DEFAULT FALSE,
-  group_name TEXT,
-  media_type TEXT NOT NULL,
-  media_path TEXT,
-  caption TEXT,
-  captured_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_view_once_bot ON view_once_captures(bot_id);

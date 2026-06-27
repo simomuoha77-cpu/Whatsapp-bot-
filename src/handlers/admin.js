@@ -6,15 +6,23 @@ const {
   FEATURE_LABELS,
   STEALTH_READ_MODES,
   STEALTH_READ_MODE_LABELS,
+  AI_PROVIDERS,
   getFeatures,
   setFeature,
   setAutoReplyMessage,
+  setWelcomeMessage,
+  setAwayMessage,
+  setAiProvider,
+  setAiSystemPrompt,
   setStealthReadMode,
 } = require('../db/botFeatures');
 const { getContactsForBot } = require('../db/contacts');
 const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
 const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
+const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
+const { getRecentCapturesForBot } = require('../db/deletedCaptures');
+const { getStatusSavesForBot } = require('../db/statusSaves');
 const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
 const { refreshScheduler } = require('./scheduler');
 
@@ -139,6 +147,9 @@ function createAdminRoutes() {
     const posts = await getScheduledStatusPostsForBot(botId);
     const reminders = await getRemindersForBot(botId);
     const viewOnceCaptures = await getViewOnceCapturesForBot(botId, 20);
+    const keywordResponses = await getAllKeywordResponses(botId);
+    const deletedCaptures = await getRecentCapturesForBot(botId, 20);
+    const statusSaves = await getStatusSavesForBot(botId, 20);
 
     const onboardingUrl = `${req.protocol}://${req.get('host')}/connect/${bot.slug}`;
 
@@ -167,6 +178,34 @@ function createAdminRoutes() {
         <small>${new Date(v.captured_at).toLocaleString()}</small>
       </div>
     `).join('') || '<p>No view-once media captured yet.</p>';
+
+    const keywordRows = keywordResponses.map((k) => `
+      <div class="row">
+        <span><strong>"${k.keyword}"</strong> → ${k.response.slice(0, 60)}${k.response.length > 60 ? '...' : ''}</span>
+        <form method="POST" action="/admin/bot/${botId}/keywords/${k.id}/delete" style="width:auto;">
+          <button type="submit" class="danger" style="width:auto;">Delete</button>
+        </form>
+      </div>
+    `).join('') || '<p>No keyword responses set up yet.</p>';
+
+    const deletedCaptureRows = deletedCaptures.map((d) => `
+      <div class="row">
+        <span>
+          ${d.message_type === 'text' ? '💬' : '📎'}
+          <strong>${d.sender_name || 'Unknown'}</strong> (${d.sender_number || '?'})
+          ${d.is_group ? ` in group "${d.group_name || d.chat_jid}"` : ''}
+          ${d.body ? `— "${d.body.slice(0, 50)}"` : ''}
+        </span>
+        <small>${new Date(d.deleted_at).toLocaleString()}</small>
+      </div>
+    `).join('') || '<p>No deleted messages recovered yet.</p>';
+
+    const statusSaveRows = statusSaves.map((s) => `
+      <div class="row">
+        <span>${s.media_type === 'video' ? '🎥' : '📷'} ${s.contact_name || s.contact_jid}</span>
+        <small>${new Date(s.saved_at).toLocaleString()}</small>
+      </div>
+    `).join('') || '<p>No status media saved yet.</p>';
 
     const postRows = posts.map((p) => `
       <div class="row">
@@ -204,14 +243,14 @@ function createAdminRoutes() {
 
       <div class="card">
         <h3>Stealth Read Mode</h3>
-        <p>Controls whether incoming messages send a blue read receipt.</p>
+        <p>Controls whether incoming messages get marked as "read" (blue ticks) on the sender's side.</p>
         <form method="POST" action="/admin/bot/${botId}/stealth-mode">
           <select name="mode">
             ${STEALTH_READ_MODES.map((m) => `
-              <option value="${m}" ${features.stealth_read_mode === m ? "selected" : ""}>
+              <option value="${m}" ${features.stealth_read_mode === m ? 'selected' : ''}>
                 ${STEALTH_READ_MODE_LABELS[m]}
               </option>
-            `).join("")}
+            `).join('')}
           </select>
           <button type="submit">Save</button>
         </form>
@@ -227,6 +266,48 @@ function createAdminRoutes() {
       </div>
 
       <div class="card">
+        <h3>Welcome message</h3>
+        <p><small>Sent once, the first time a contact messages this bot.</small></p>
+        <form method="POST" action="/admin/bot/${botId}/welcome-message">
+          <input name="message" value="${(features.welcome_message_text || '').replace(/"/g, '&quot;')}" />
+          <button type="submit">Save</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Away message</h3>
+        <form method="POST" action="/admin/bot/${botId}/away-message">
+          <input name="message" value="${(features.away_message_text || '').replace(/"/g, '&quot;')}" />
+          <button type="submit">Save</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>🤖 AI Chat Assistant</h3>
+        <p><small>Set provider and personality. Needs GROQ_API_KEY or GEMINI_API_KEY configured on the server.</small></p>
+        <form method="POST" action="/admin/bot/${botId}/ai-provider">
+          <select name="provider">
+            ${AI_PROVIDERS.map((p) => `<option value="${p}" ${features.ai_provider === p ? 'selected' : ''}>${p}</option>`).join('')}
+          </select>
+          <button type="submit">Save Provider</button>
+        </form>
+        <form method="POST" action="/admin/bot/${botId}/ai-prompt" style="margin-top:10px;">
+          <input name="prompt" value="${(features.ai_system_prompt || '').replace(/"/g, '&quot;')}" placeholder="System prompt / personality" />
+          <button type="submit">Save Prompt</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Keyword Responses</h3>
+        ${keywordRows}
+        <form method="POST" action="/admin/bot/${botId}/keywords">
+          <input name="keyword" placeholder="Keyword (e.g. 'price')" required />
+          <input name="response" placeholder="Response to send" required />
+          <button type="submit">Add Keyword Response</button>
+        </form>
+      </div>
+
+      <div class="card">
         <h3>Recent contacts</h3>
         ${contactRows}
       </div>
@@ -235,6 +316,17 @@ function createAdminRoutes() {
         <h3>👁️ View-Once Captures</h3>
         <p><small>Captured media is also forwarded to this bot's own "Message Yourself" chat.</small></p>
         ${viewOnceRows}
+      </div>
+
+      <div class="card">
+        <h3>🗑️ Deleted Message Recovery</h3>
+        <p><small>Recovered content is also forwarded to this bot's own "Message Yourself" chat.</small></p>
+        ${deletedCaptureRows}
+      </div>
+
+      <div class="card">
+        <h3>📸 Saved Status Media</h3>
+        ${statusSaveRows}
       </div>
 
       <div class="card">
@@ -282,13 +374,17 @@ function createAdminRoutes() {
     const mode = req.body.mode;
     if (STEALTH_READ_MODES.includes(mode)) {
       await setStealthReadMode(botId, mode);
+      // Apply immediately to the live connection, if one exists, instead
+      // of waiting for the next reconnect.
       try {
         const live = getBotState(botId);
         if (live && live.sock && live.status === 'connected') {
           const receiptsValue = mode === 'normal' ? 'all' : 'none';
           await live.sock.updateReadReceiptsPrivacy(receiptsValue);
         }
-      } catch (err) {}
+      } catch (err) {
+        // Non-fatal — will still apply on next reconnect via botManager.js
+      }
     }
     res.redirect(`/admin/bot/${botId}`);
   });
@@ -297,6 +393,46 @@ function createAdminRoutes() {
     const botId = parseInt(req.params.id, 10);
     await setAutoReplyMessage(botId, req.body.message || '');
     res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/welcome-message', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    await setWelcomeMessage(botId, req.body.message || '');
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/away-message', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    await setAwayMessage(botId, req.body.message || '');
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/ai-provider', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    if (AI_PROVIDERS.includes(req.body.provider)) {
+      await setAiProvider(botId, req.body.provider);
+    }
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/ai-prompt', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    await setAiSystemPrompt(botId, req.body.prompt || '');
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/keywords', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const { keyword, response } = req.body;
+    if (keyword && response) {
+      await addKeywordResponse(botId, keyword, response);
+    }
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/keywords/:keywordId/delete', async (req, res) => {
+    await deleteKeywordResponse(parseInt(req.params.keywordId, 10));
+    res.redirect(`/admin/bot/${req.params.id}`);
   });
 
   router.post('/bot/:id/regenerate-link', async (req, res) => {
