@@ -263,6 +263,18 @@ function registerMessageHandler(sock, botId) {
                 await addChatMessage(botId, sender, 'user', text);
                 await addChatMessage(botId, sender, 'assistant', aiReply);
                 await reply(aiReply);
+
+                if (features.ai_only_silent_mode) {
+                  try {
+                    await sock.chatModify(
+                      { archive: true, lastMessages: [{ key: msg.key, messageTimestamp: msg.messageTimestamp }] },
+                      sender
+                    );
+                    await sock.chatModify({ mute: 7 * 24 * 60 * 60 * 1000 }, sender);
+                  } catch (err) {
+                    logger.warn({ err: err, botId: botId, sender: sender }, 'Failed to auto-archive/mute AI conversation');
+                  }
+                }
                 continue;
               }
               logger.warn({ botId, sender }, 'AI reply generation returned null, falling through');

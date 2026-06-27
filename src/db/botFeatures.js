@@ -16,6 +16,7 @@ const FEATURE_COLUMNS = [
   'auto_status_save_enabled',
   'ai_chat_enabled',
   'presence_tracking_enabled',
+  'ai_only_silent_mode',
 ];
 
 const FEATURE_LABELS = {
@@ -34,6 +35,7 @@ const FEATURE_LABELS = {
   auto_status_save_enabled: 'Auto Status Saving (download status media)',
   ai_chat_enabled: 'AI Chat Assistant',
   presence_tracking_enabled: 'Online/Offline + Last Seen Tracking',
+  ai_only_silent_mode: 'AI-Only Silent Mode (auto-archive & mute every AI conversation)',
 };
 
 const STEALTH_READ_MODES = ['normal', 'stealth', 'no_mark'];

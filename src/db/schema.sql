@@ -267,3 +267,5 @@ ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_chat_enabled BOOLEAN DEFAUL
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_provider TEXT DEFAULT 'groq';
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_system_prompt TEXT DEFAULT 'You are a helpful assistant responding to WhatsApp messages. Keep replies concise.';
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS presence_tracking_enabled BOOLEAN DEFAULT FALSE;
+
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_only_silent_mode BOOLEAN DEFAULT FALSE;
