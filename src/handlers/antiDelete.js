@@ -8,13 +8,8 @@ const { cacheMessageForAntiDelete } = require('../db/deletedCaptures');
 const MEDIA_ROOT = path.join(__dirname, '..', '..', 'downloads', 'anti-delete');
 if (!fs.existsSync(MEDIA_ROOT)) fs.mkdirSync(MEDIA_ROOT, { recursive: true });
 
-// In-memory cache of recent messages, keyed by message id, so that when a
-// REVOKE protocol message references that id, we can look up what it was
-// and forward a copy. Capped and periodically cleared to avoid unbounded
-// memory growth — anti-delete only needs to bridge a short window between
-// a message arriving and it (possibly) being deleted shortly after.
-const recentMessages = new Map(); // messageId -> { botId, msg, cachedAt }
-const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const recentMessages = new Map();
+const CACHE_TTL_MS = 30 * 60 * 1000;
 
 function cleanupOldEntries() {
   const now = Date.now();
@@ -40,28 +35,103 @@ function getMessageTypeAndBody(message) {
   return { type: 'unknown', body: null };
 }
 
-/**
- * Caches an incoming message in memory (for quick lookup if it's deleted
- * shortly after) — called for every message regardless of whether
- * anti_delete is enabled, since we don't know in advance which messages
- * will get deleted. The actual feature check happens at delete-detection
- * time, not at cache time, so toggling the feature on/off doesn't require
- * pre-emptively knowing what to cache.
- */
 function cacheIncomingMessage(botId, msg) {
-  if (!msg.key?.id) return;
-  recentMessages.set(msg.key.id, { botId, msg, cachedAt: Date.now() });
+  if (!msg.key || !msg.key.id) return;
+  recentMessages.set(msg.key.id, { botId: botId, msg: msg, cachedAt: Date.now() });
 }
 
-/**
- * Checks if an incoming message is a REVOKE protocol message (a delete
- * notification). If so, and anti_delete is enabled for this bot, looks up
- * the cached original message, downloads its media if needed, logs it,
- * and forwards a copy to the bot's own "Message Yourself" chat.
- *
- * Returns true if this message was a delete notification (handled or not),
- * so the caller can skip further normal processing for it.
- */
+async function processDeletedMessageId(sock, botId, messageId) {
+  let features;
+  try {
+    features = await getFeatures(botId);
+  } catch (err) {
+    logger.warn({ err: err, botId: botId }, 'Failed to load features for anti-delete check');
+    return;
+  }
+  if (!features.anti_delete_enabled) return;
+
+  const cached = recentMessages.get(messageId);
+  if (!cached) {
+    logger.info({ botId: botId, messageId: messageId }, 'Delete detected but original message not in cache');
+    return;
+  }
+
+  const originalMsg = cached.msg;
+  const typeAndBody = getMessageTypeAndBody(originalMsg.message);
+  const messageType = typeAndBody.type;
+  const body = typeAndBody.body;
+  const chatJid = originalMsg.key.remoteJid;
+  const isGroup = chatJid.endsWith('@g.us');
+  const senderJid = originalMsg.key.participant || (isGroup ? null : chatJid) || chatJid;
+  const senderName = originalMsg.pushName || null;
+  const senderNumber = senderJid ? senderJid.split('@')[0].split(':')[0] : null;
+
+  let groupName = null;
+  if (isGroup) {
+    try {
+      const meta = await sock.groupMetadata(chatJid);
+      groupName = meta && meta.subject ? meta.subject : null;
+    } catch (err) {}
+  }
+
+  let mediaPath = null;
+  if (['image', 'video', 'audio', 'document', 'sticker'].includes(messageType)) {
+    try {
+      const buffer = await downloadMediaMessage(originalMsg, 'buffer', {}, { logger: logger });
+      const extMap = { image: 'jpg', video: 'mp4', audio: 'ogg', document: 'bin', sticker: 'webp' };
+      const filename = Date.now() + '_' + sanitizeFilenamePart(senderNumber) + '.' + (extMap[messageType] || 'bin');
+      mediaPath = path.join(MEDIA_ROOT, filename);
+      fs.writeFileSync(mediaPath, buffer);
+    } catch (err) {
+      logger.warn({ err: err, botId: botId }, 'Failed to download media for deleted message capture');
+    }
+  }
+
+  try {
+    await cacheMessageForAntiDelete({
+      botId: botId,
+      sourceType: 'message',
+      senderJid: senderJid,
+      senderName: senderName,
+      senderNumber: senderNumber,
+      chatJid: chatJid,
+      isGroup: isGroup,
+      groupName: groupName,
+      messageType: messageType,
+      body: body,
+      mediaPath: mediaPath,
+      originalSentAt: originalMsg.messageTimestamp ? new Date(originalMsg.messageTimestamp * 1000).toISOString() : null
+    });
+  } catch (err) {
+    logger.error({ err: err, botId: botId }, 'Failed to log anti-delete capture');
+  }
+
+  try {
+    const ownJid = sock.user && sock.user.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null;
+    if (ownJid) {
+      const where = isGroup ? 'group "' + (groupName || chatJid) + '"' : 'a direct chat';
+      const header = '🗑️ *Deleted Message Recovered*\n\nFrom: ' + (senderName || 'Unknown') + ' (' + (senderNumber || 'unknown number') + ')\nIn: ' + where + '\nDate: ' + new Date().toLocaleString();
+
+      if (mediaPath) {
+        const buffer = fs.readFileSync(mediaPath);
+        const caption = header + (body ? '\n\nCaption: ' + body : '');
+        const payload = messageType === 'video' ? { video: buffer, caption: caption }
+          : messageType === 'audio' ? { audio: buffer, caption: caption, ptt: false }
+          : messageType === 'document' ? { document: buffer, caption: caption, fileName: body || 'document' }
+          : { image: buffer, caption: caption };
+        await sock.sendMessage(ownJid, payload);
+      } else {
+        await sock.sendMessage(ownJid, { text: header + '\n\nMessage: ' + (body || '(no text content)') });
+      }
+    }
+  } catch (err) {
+    logger.error({ err: err, botId: botId }, 'Failed to forward deleted message to self-chat');
+  }
+
+  logger.info({ botId: botId, senderJid: senderJid, messageType: messageType, isGroup: isGroup }, 'Recovered deleted message');
+  recentMessages.delete(messageId);
+}
+
 async function handlePotentialDelete(sock, botId, msg) {
   const protocolMsg = msg.message && msg.message.protocolMessage;
   if (!protocolMsg) return false;
@@ -77,10 +147,6 @@ async function handlePotentialDelete(sock, botId, msg) {
     );
   } catch (debugErr) {}
 
-  // Baileys/WAProto may represent the REVOKE type as the number 0 or the
-  // string 'REVOKE' depending on version. Explicitly exclude other known
-  // protocol message types (message edits, history sync notifications,
-  // etc.) so we don't misfire on those.
   const typeVal = protocolMsg.type;
   const knownNonDeleteTypes = ['MESSAGE_EDIT', 14, 'HISTORY_SYNC_NOTIFICATION', 1, 'PEER_DATA_OPERATION_REQUEST_MESSAGE'];
   if (knownNonDeleteTypes.includes(typeVal)) return false;
@@ -89,109 +155,32 @@ async function handlePotentialDelete(sock, botId, msg) {
   if (!isRevoke) return false;
 
   const originalKey = protocolMsg.key;
-  if (!originalKey?.id) return true; // it's a revoke, but nothing to look up
+  if (!originalKey || !originalKey.id) return true;
 
-  let features;
-  try {
-    features = await getFeatures(botId);
-  } catch (err) {
-    logger.warn({ err, botId }, 'Failed to load features for anti-delete check');
-    return true;
-  }
-  if (!features.anti_delete_enabled) return true;
-
-  const cached = recentMessages.get(originalKey.id);
-  if (!cached) {
-    logger.info({ botId, messageId: originalKey.id }, 'Delete detected but original message not in cache (too old or never seen)');
-    return true;
-  }
-
-  const originalMsg = cached.msg;
-  const { type: messageType, body } = getMessageTypeAndBody(originalMsg.message);
-  const chatJid = originalMsg.key.remoteJid;
-  const isGroup = chatJid.endsWith('@g.us');
-  const senderJid = originalMsg.key.participant || (isGroup ? null : chatJid) || chatJid;
-  const senderName = originalMsg.pushName || null;
-  const senderNumber = senderJid ? senderJid.split('@')[0].split(':')[0] : null;
-
-  let groupName = null;
-  if (isGroup) {
-    try {
-      const meta = await sock.groupMetadata(chatJid);
-      groupName = meta?.subject || null;
-    } catch (err) {
-      // non-fatal
-    }
-  }
-
-  let mediaPath = null;
-  if (['image', 'video', 'audio', 'document', 'sticker'].includes(messageType)) {
-    try {
-      const buffer = await downloadMediaMessage(originalMsg, 'buffer', {}, { logger });
-      const extMap = { image: 'jpg', video: 'mp4', audio: 'ogg', document: 'bin', sticker: 'webp' };
-      const filename = `${Date.now()}_${sanitizeFilenamePart(senderNumber)}.${extMap[messageType] || 'bin'}`;
-      mediaPath = path.join(MEDIA_ROOT, filename);
-      fs.writeFileSync(mediaPath, buffer);
-    } catch (err) {
-      logger.warn({ err, botId }, 'Failed to download media for deleted message capture');
-    }
-  }
-
-  try {
-    await cacheMessageForAntiDelete({
-      botId,
-      sourceType: 'message',
-      senderJid,
-      senderName,
-      senderNumber,
-      chatJid,
-      isGroup,
-      groupName,
-      messageType,
-      body,
-      mediaPath,
-      originalSentAt: originalMsg.messageTimestamp
-        ? new Date(originalMsg.messageTimestamp * 1000).toISOString()
-        : null,
-    });
-  } catch (err) {
-    logger.error({ err, botId }, 'Failed to log anti-delete capture');
-  }
-
-  // Forward a notice (and media, if any) to the bot's own self-chat.
-  try {
-    const ownJid = sock.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null;
-    if (ownJid) {
-      const where = isGroup ? `group "${groupName || chatJid}"` : 'a direct chat';
-      const header =
-        `🗑️ *Deleted Message Recovered*\n\n` +
-        `From: ${senderName || 'Unknown'} (${senderNumber || 'unknown number'})\n` +
-        `In: ${where}\n` +
-        `Date: ${new Date().toLocaleString()}`;
-
-      if (mediaPath) {
-        const buffer = fs.readFileSync(mediaPath);
-        const caption = `${header}${body ? `\n\nCaption: ${body}` : ''}`;
-        const payload =
-          messageType === 'video'
-            ? { video: buffer, caption }
-            : messageType === 'audio'
-              ? { audio: buffer, caption, ptt: false }
-              : messageType === 'document'
-                ? { document: buffer, caption, fileName: body || 'document' }
-                : { image: buffer, caption };
-        await sock.sendMessage(ownJid, payload);
-      } else {
-        await sock.sendMessage(ownJid, { text: `${header}\n\nMessage: ${body || '(no text content)'}` });
-      }
-    }
-  } catch (err) {
-    logger.error({ err, botId }, 'Failed to forward deleted message to self-chat');
-  }
-
-  logger.info({ botId, senderJid, messageType, isGroup }, 'Recovered deleted message');
-  recentMessages.delete(originalKey.id);
+  await processDeletedMessageId(sock, botId, originalKey.id);
   return true;
 }
 
-module.exports = { cacheIncomingMessage, handlePotentialDelete };
+function registerDeleteListener(sock, botId) {
+  sock.ev.on('messages.delete', async (item) => {
+    try {
+      try {
+        const dbg = require('../db/pool');
+        await dbg.query(
+          "INSERT INTO debug_log (bot_id, has_message, message_keys, from_me, remote_jid) VALUES ($1, $2, $3, $4, $5)",
+          [botId, true, 'MESSAGES_DELETE_EVENT ' + JSON.stringify(item).slice(0, 300), false, 'MESSAGES_DELETE']
+        );
+      } catch (debugErr) {}
+
+      if (item.keys) {
+        for (const key of item.keys) {
+          if (key && key.id) await processDeletedMessageId(sock, botId, key.id);
+        }
+      }
+    } catch (err) {
+      logger.error({ err: err, botId: botId }, 'Error in messages.delete handler');
+    }
+  });
+}
+
+module.exports = { cacheIncomingMessage: cacheIncomingMessage, handlePotentialDelete: handlePotentialDelete, registerDeleteListener: registerDeleteListener };
