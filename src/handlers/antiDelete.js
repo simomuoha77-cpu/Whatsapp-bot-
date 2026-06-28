@@ -107,25 +107,20 @@ async function processDeletedMessageId(sock, botId, messageId) {
   }
 
   try {
-    const ownJid = sock.user && sock.user.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null;
-    if (ownJid) {
-      const where = isGroup ? 'group "' + (groupName || chatJid) + '"' : 'a direct chat';
-      const header = '🗑️ *Deleted Message Recovered*\n\nFrom: ' + (senderName || 'Unknown') + ' (' + (senderNumber || 'unknown number') + ')\nIn: ' + where + '\nDate: ' + new Date().toLocaleString();
-
-      if (mediaPath) {
-        const buffer = fs.readFileSync(mediaPath);
-        const caption = header + (body ? '\n\nCaption: ' + body : '');
-        const payload = messageType === 'video' ? { video: buffer, caption: caption }
-          : messageType === 'audio' ? { audio: buffer, caption: caption, ptt: false }
-          : messageType === 'document' ? { document: buffer, caption: caption, fileName: body || 'document' }
-          : { image: buffer, caption: caption };
-        await sock.sendMessage(ownJid, payload);
-      } else {
-        await sock.sendMessage(ownJid, { text: header + '\n\nMessage: ' + (body || '(no text content)') });
-      }
+    const header = '🗑️ *This message was deleted, but here\'s what it said:*';
+    if (mediaPath) {
+      const buffer = fs.readFileSync(mediaPath);
+      const caption = header + (body ? '\n\n' + body : '');
+      const payload = messageType === 'video' ? { video: buffer, caption: caption }
+        : messageType === 'audio' ? { audio: buffer, caption: caption, ptt: false }
+        : messageType === 'document' ? { document: buffer, caption: caption, fileName: body || 'document' }
+        : { image: buffer, caption: caption };
+      await sock.sendMessage(chatJid, payload);
+    } else {
+      await sock.sendMessage(chatJid, { text: header + '\n\n' + (body || '(no text content)') });
     }
   } catch (err) {
-    logger.error({ err: err, botId: botId }, 'Failed to forward deleted message to self-chat');
+    logger.error({ err: err, botId: botId, chatJid: chatJid }, 'Failed to resend deleted message into the original chat');
   }
 
   logger.info({ botId: botId, senderJid: senderJid, messageType: messageType, isGroup: isGroup }, 'Recovered deleted message');
