@@ -247,15 +247,10 @@ CREATE TABLE IF NOT EXISTS ai_chat_history (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_chat_history_bot_contact ON ai_chat_history(bot_id, contact_jid);
 
--- Platform admin (you) login for the master dashboard. Single row in practice,
--- but modeled as a table in case you ever want more than one admin login.
-CREATE TABLE IF NOT EXISTS platform_admins (
-  id SERIAL PRIMARY KEY,
-  username TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
+-- IMPORTANT: CREATE TABLE IF NOT EXISTS does nothing if the table already
+-- exists — it does NOT add new columns to it. Since bot_features was
+-- created in an earlier deploy before these columns existed, they must be
+-- added explicitly here, every time, so existing databases catch up.
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS anti_delete_enabled BOOLEAN DEFAULT FALSE;
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS welcome_message_enabled BOOLEAN DEFAULT FALSE;
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS welcome_message_text TEXT DEFAULT 'Welcome! Thanks for messaging us.';
@@ -267,5 +262,63 @@ ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_chat_enabled BOOLEAN DEFAUL
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_provider TEXT DEFAULT 'groq';
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_system_prompt TEXT DEFAULT 'You are a helpful assistant responding to WhatsApp messages. Keep replies concise.';
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS presence_tracking_enabled BOOLEAN DEFAULT FALSE;
-
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_only_silent_mode BOOLEAN DEFAULT FALSE;
+
+-- Client-facing login accounts (separate from your own platform admin
+-- login). One account per phone number, linked to the bot they registered
+-- with that number. Login is phone number + password only.
+CREATE TABLE IF NOT EXISTS client_accounts (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  phone_number TEXT UNIQUE NOT NULL,   -- the number they registered with; trial is tied to this permanently
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- One subscription record per bot. Tracks trial window and paid-until
+-- date. A bot is "active" if NOW() is before trial_ends_at OR before
+-- paid_until, whichever is later.
+CREATE TABLE IF NOT EXISTS subscriptions (
+  bot_id INTEGER PRIMARY KEY REFERENCES bots(id) ON DELETE CASCADE,
+  trial_started_at TIMESTAMPTZ DEFAULT NOW(),
+  trial_ends_at TIMESTAMPTZ NOT NULL,
+  paid_until TIMESTAMPTZ,              -- NULL until they've ever paid
+  plan TEXT DEFAULT 'monthly',          -- 'monthly' or 'yearly'
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Records of every STK Push payment attempt, successful or not. Looked up
+-- by checkout_request_id when Safaricom's callback arrives.
+CREATE TABLE IF NOT EXISTS payments (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  checkout_request_id TEXT UNIQUE NOT NULL,
+  merchant_request_id TEXT,
+  phone_number TEXT NOT NULL,
+  amount NUMERIC NOT NULL,
+  plan TEXT NOT NULL,                  -- 'monthly' or 'yearly'
+  status TEXT DEFAULT 'pending',        -- pending, success, failed, cancelled
+  mpesa_receipt_number TEXT,
+  result_desc TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_payments_bot ON payments(bot_id);
+
+-- Global pricing, set by you (the platform admin) from /admin. Single row.
+CREATE TABLE IF NOT EXISTS pricing_settings (
+  id SERIAL PRIMARY KEY,
+  monthly_price NUMERIC NOT NULL DEFAULT 500,
+  yearly_price NUMERIC NOT NULL DEFAULT 5000,
+  trial_days INTEGER NOT NULL DEFAULT 5,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Platform admin (you) login for the master dashboard. Single row in practice,
+-- but modeled as a table in case you ever want more than one admin login.
+CREATE TABLE IF NOT EXISTS platform_admins (
+  id SERIAL PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);

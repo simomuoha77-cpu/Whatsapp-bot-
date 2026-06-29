@@ -147,6 +147,15 @@ async function saveStatusIfMedia(botId, msg, messageType, caption, contactJid) {
  */
 function registerStatusHandler(sock, botId) {
   sock.ev.on('messages.upsert', async ({ messages }) => {
+    // Subscription gate — same as messageHandler.js, checked once per batch.
+    try {
+      const { isSubscriptionActive } = require('../db/subscriptions');
+      const active = await isSubscriptionActive(botId);
+      if (!active) return;
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to check subscription status for status handler, allowing through');
+    }
+
     for (const msg of messages) {
       if (msg.key?.remoteJid !== STATUS_JID) continue;
       if (!msg.message) continue;

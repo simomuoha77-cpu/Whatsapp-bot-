@@ -193,9 +193,47 @@ this client**, same as everything else.
   WhatsApp simply never sends presence updates for them, regardless of
   anything this code does.
 
+## Client billing (trials, subscriptions, M-Pesa STK Push)
+
+Clients can self-register at `/client/register` with a phone number and
+password — separate from your own `/admin` login. Registering creates
+their bot, starts a free trial (length set by you), and takes them
+straight to the WhatsApp connection page.
+
+- **Trial**: tied permanently to the phone number used at registration —
+  that number can't register again for a second trial.
+- **Client dashboard** (`/client/dashboard`, after logging in): shows
+  subscription status (trial days left / paid until / expired) and lets
+  them trigger an M-Pesa STK Push to subscribe or renew.
+- **Expiry enforcement**: when a bot's trial and any paid period have both
+  lapsed, the bot stops responding entirely — no commands, no auto-reply,
+  no AI, nothing — checked on every incoming message and status update.
+- **Pricing**: set globally from `/admin` (monthly price, yearly price,
+  trial length in days). Changes apply going forward, not retroactively.
+- **Payments**: each STK Push attempt is logged in the `payments` table;
+  Safaricom's callback (`/client/payment-callback`) confirms success/failure
+  and extends the subscription automatically on success.
+
+**Setup required before this works for real:**
+1. Set `DARAJA_CONSUMER_KEY`, `DARAJA_CONSUMER_SECRET`, `DARAJA_SHORTCODE`,
+   `DARAJA_PASSKEY` in your environment (from your Safaricom Daraja app).
+2. Set `DARAJA_ENV=production` once you're ready for real transactions
+   (defaults to `sandbox` for testing).
+3. Daraja's callback requires a public HTTPS URL — your Render URL already
+   satisfies this; no extra setup needed there.
+4. Test with Safaricom's sandbox test number (`254708374149`, any 4-digit
+   PIN) before switching to production.
+
+**Honest limitation**: this billing logic has been verified against
+Safaricom's documented API format and tested with mocked HTTP responses,
+but has not been tested against a real M-Pesa transaction. Test thoroughly
+in sandbox mode first.
+
 ## Known limitations
 
-- No payment/subscription system — this manages bot access, not billing.
+- No automatic dunning/retry on failed renewal payments — a client whose
+  card/M-Pesa payment fails simply sees "expired" and must manually retry
+  from their dashboard.
   You'd add that separately (e.g. manually toggling features based on
   whether a client paid, or integrating a payment provider).
 - No per-client custom command sets yet — all clients currently share the

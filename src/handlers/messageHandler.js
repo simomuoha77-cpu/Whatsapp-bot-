@@ -61,6 +61,21 @@ function registerMessageHandler(sock, botId) {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
+    // Subscription gate: if this bot's trial/paid period has expired, it
+    // does nothing at all — no auto-reply, no commands, no AI, nothing.
+    // Checked once per batch rather than per-message for efficiency.
+    try {
+      const { isSubscriptionActive } = require('../db/subscriptions');
+      const active = await isSubscriptionActive(botId);
+      if (!active) return;
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to check subscription status, allowing message through as a safe default');
+      // Fail open rather than closed — a database hiccup shouldn't lock
+      // out a paying client's bot. Worth revisiting if abuse becomes a
+      // concern, but a false negative here is worse than a rare false
+      // positive.
+    }
+
     for (const msg of messages) {
       try {
         if (!msg.message) continue;
@@ -264,15 +279,21 @@ function registerMessageHandler(sock, botId) {
                 await addChatMessage(botId, sender, 'assistant', aiReply);
                 await reply(aiReply);
 
+                // AI-Only Silent Mode: immediately archive and mute this
+                // conversation so it doesn't sit visibly in the owner's
+                // chat list demanding attention. This can't stop messages
+                // from existing on the account (that's a WhatsApp protocol
+                // limit, not something any code can change), but it does
+                // keep the conversation tucked away out of the main inbox.
                 if (features.ai_only_silent_mode) {
                   try {
                     await sock.chatModify(
                       { archive: true, lastMessages: [{ key: msg.key, messageTimestamp: msg.messageTimestamp }] },
                       sender
                     );
-                    await sock.chatModify({ mute: 7 * 24 * 60 * 60 * 1000 }, sender);
+                    await sock.chatModify({ mute: 7 * 24 * 60 * 60 * 1000 }, sender); // mute for 7 days
                   } catch (err) {
-                    logger.warn({ err: err, botId: botId, sender: sender }, 'Failed to auto-archive/mute AI conversation');
+                    logger.warn({ err, botId, sender }, 'Failed to auto-archive/mute AI conversation');
                   }
                 }
                 continue;

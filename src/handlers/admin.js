@@ -23,6 +23,9 @@ const { getRemindersForBot, createReminder, deactivateReminder } = require('../d
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
 const { getRecentCapturesForBot } = require('../db/deletedCaptures');
 const { getStatusSavesForBot } = require('../db/statusSaves');
+const { getPricingSettings, updatePricingSettings } = require('../db/pricingSettings');
+const { getSubscription, isSubscriptionActive } = require('../db/subscriptions');
+const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
 const { refreshScheduler } = require('./scheduler');
 
@@ -100,32 +103,57 @@ function createAdminRoutes() {
   // --- Client list + create new ---
   router.get('/', async (req, res) => {
     const bots = await getAllBots();
-    const rows = bots.map((b) => {
+    const pricing = await getPricingSettings();
+    const rows = await Promise.all(bots.map(async (b) => {
       const live = getBotState(b.id);
       const status = live?.status || b.status;
+      const subActive = await isSubscriptionActive(b.id);
       return `
         <div class="row">
           <div>
             <strong>${b.client_name || '(unnamed client)'}</strong><br/>
-            <small>${b.phone_number ? b.phone_number : 'not connected'} ${statusPill(status)}</small>
+            <small>${b.phone_number ? b.phone_number : 'not connected'} ${statusPill(status)} <span class="pill ${subActive ? 'on' : 'off'}">${subActive ? 'SUBSCRIBED' : 'EXPIRED'}</span></small>
           </div>
           <a href="/admin/bot/${b.id}">Manage →</a>
         </div>
       `;
-    }).join('');
+    }));
 
     res.send(layout('Clients', `
       ${nav()}
       <h2>Your Clients</h2>
+      <div class="card">
+        <h3>Pricing</h3>
+        <form method="POST" action="/admin/pricing">
+          <label>Monthly price (KES)</label>
+          <input name="monthlyPrice" type="number" value="${pricing.monthly_price}" required />
+          <label>Yearly price (KES)</label>
+          <input name="yearlyPrice" type="number" value="${pricing.yearly_price}" required />
+          <label>Free trial length (days)</label>
+          <input name="trialDays" type="number" value="${pricing.trial_days}" required />
+          <button type="submit">Save Pricing</button>
+        </form>
+        <p><small>Changes apply to new registrations and renewals going forward — doesn't retroactively change anyone's current trial/subscription end date.</small></p>
+      </div>
       <div class="card">
         <h3>Add a new client</h3>
         <form method="POST" action="/admin/bots">
           <input name="clientName" placeholder="Client name (e.g. Jane's Salon)" required />
           <button type="submit">Create Client Bot</button>
         </form>
+        <p><small>Note: clients can also self-register with their own trial at <code>/client/register</code> — this admin-created path doesn't include a client login/payment account.</small></p>
       </div>
-      <div class="card">${rows || '<p>No clients yet.</p>'}</div>
+      <div class="card">${rows.join('') || '<p>No clients yet.</p>'}</div>
     `));
+  });
+
+  router.post('/pricing', async (req, res) => {
+    await updatePricingSettings({
+      monthlyPrice: parseFloat(req.body.monthlyPrice),
+      yearlyPrice: parseFloat(req.body.yearlyPrice),
+      trialDays: parseInt(req.body.trialDays, 10),
+    });
+    res.redirect('/admin');
   });
 
   router.post('/bots', async (req, res) => {
@@ -147,6 +175,9 @@ function createAdminRoutes() {
     const posts = await getScheduledStatusPostsForBot(botId);
     const reminders = await getRemindersForBot(botId);
     const viewOnceCaptures = await getViewOnceCapturesForBot(botId, 20);
+    const subscription = await getSubscription(botId);
+    const subActive = await isSubscriptionActive(botId);
+    const payments = await getPaymentsForBot(botId, 10);
     const keywordResponses = await getAllKeywordResponses(botId);
     const deletedCaptures = await getRecentCapturesForBot(botId, 20);
     const statusSaves = await getStatusSavesForBot(botId, 20);
@@ -226,6 +257,17 @@ function createAdminRoutes() {
       ${nav()}
       <h2>${bot.client_name || '(unnamed client)'}</h2>
       <p>${statusPill(status)} ${bot.phone_number ? `— ${bot.phone_number}` : ''}</p>
+
+      <div class="card">
+        <h3>💳 Subscription</h3>
+        <p><span class="pill ${subActive ? 'on' : 'off'}">${subActive ? 'ACTIVE' : 'EXPIRED'}</span></p>
+        ${subscription ? `
+          <p><small>Trial ends: ${new Date(subscription.trial_ends_at).toLocaleString()}</small></p>
+          ${subscription.paid_until ? `<p><small>Paid until: ${new Date(subscription.paid_until).toLocaleString()} (${subscription.plan})</small></p>` : '<p><small>No payments yet.</small></p>'}
+        ` : '<p><small>No subscription record (admin-created bot, not self-registered).</small></p>'}
+        <p><small>Recent payments:</small></p>
+        ${payments.map((p) => `<div class="row"><span>${p.plan} — KES ${p.amount}</span><span class="pill ${p.status === 'success' ? 'on' : 'off'}">${p.status}</span></div>`).join('') || '<p>None</p>'}
+      </div>
 
       <div class="card">
         <h3>Onboarding link</h3>
