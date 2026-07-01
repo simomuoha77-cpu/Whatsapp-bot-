@@ -1,4 +1,5 @@
 const express = require('express');
+const logger = require('../utils/logger');
 const { verifyCredentials, requirePlatformAuth } = require('../utils/platformAuth');
 const { createBot, getAllBots, getBotById, deleteBot, renameBot } = require('../db/bots');
 const {
@@ -23,6 +24,7 @@ const { getRemindersForBot, createReminder, deactivateReminder } = require('../d
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
 const { getRecentCapturesForBot } = require('../db/deletedCaptures');
 const { getStatusSavesForBot } = require('../db/statusSaves');
+const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownStatusPosts');
 const { getPricingSettings, updatePricingSettings } = require('../db/pricingSettings');
 const { getSubscription, isSubscriptionActive } = require('../db/subscriptions');
 const { getPaymentsForBot } = require('../db/payments');
@@ -181,6 +183,7 @@ function createAdminRoutes() {
     const keywordResponses = await getAllKeywordResponses(botId);
     const deletedCaptures = await getRecentCapturesForBot(botId, 20);
     const statusSaves = await getStatusSavesForBot(botId, 20);
+    const statusPosts = await getRecentPostsWithViewers(botId, 10);
 
     const onboardingUrl = `${req.protocol}://${req.get('host')}/connect/${bot.slug}`;
 
@@ -372,6 +375,29 @@ function createAdminRoutes() {
       </div>
 
       <div class="card">
+        <h3>👀 Status Views</h3>
+        <p><small>Post a status now, or check viewers on scheduled posts — either way, viewers show up here once they open it.</small></p>
+        <form method="POST" action="/admin/bot/${botId}/post-status">
+          <input name="caption" placeholder="What's on your mind?" required />
+          <button type="submit">Post to Status Now</button>
+        </form>
+        ${statusPosts.length ? statusPosts.map((p) => `
+          <div class="row" style="flex-direction:column;align-items:flex-start;gap:6px;">
+            <div style="display:flex;justify-content:space-between;width:100%;">
+              <span>${p.source === 'scheduled' ? '⏰' : '✍️'} "${(p.caption || '').slice(0, 60)}${(p.caption || '').length > 60 ? '...' : ''}"</span>
+              <span class="pill on">${p.viewCount} view${p.viewCount === 1 ? '' : 's'}</span>
+            </div>
+            <small>${new Date(p.posted_at).toLocaleString()}</small>
+            ${p.viewers.length ? `
+              <div style="width:100%;padding-left:8px;">
+                ${p.viewers.map((v) => `<div><small>${v.viewer_name || v.viewer_jid.split('@')[0]} — ${new Date(v.viewed_at).toLocaleString()}</small></div>`).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `).join('') : '<p>No status posts tracked yet.</p>'}
+      </div>
+
+      <div class="card">
         <h3>Scheduled status posts</h3>
         ${postRows}
         <form method="POST" action="/admin/bot/${botId}/scheduled-posts">
@@ -488,6 +514,27 @@ function createAdminRoutes() {
     const newSlug = crypto.randomBytes(6).toString('hex');
     await query('UPDATE bots SET slug = $1, status = $2 WHERE id = $3', [newSlug, 'pending', botId]);
     await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch(() => {});
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/post-status', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const caption = (req.body.caption || '').trim();
+    if (!caption) return res.redirect(`/admin/bot/${botId}`);
+
+    const live = getBotState(botId);
+    if (!live || !live.sock || live.status !== 'connected') {
+      return res.send(layout('Not connected', `<p>This client's bot isn't connected right now, so it can't post a status.</p><a href="/admin/bot/${botId}">Back</a>`));
+    }
+
+    try {
+      const sent = await live.sock.sendMessage('status@broadcast', { text: caption });
+      if (sent?.key?.id) {
+        await recordOwnStatusPost(botId, sent.key.id, { source: 'manual', caption });
+      }
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to post manual status from admin panel');
+    }
     res.redirect(`/admin/bot/${botId}`);
   });
 

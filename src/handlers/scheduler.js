@@ -49,6 +49,12 @@ async function sendReminder(reminder) {
   }
 }
 
+/**
+ * Loads all active scheduled status posts and recurring reminders across
+ * ALL bots and registers cron jobs for them. Each job looks up the live
+ * socket for its bot_id at run time, so it always uses the current
+ * connection (even after reconnects).
+ */
 async function startScheduler() {
   for (const job of activeJobs.values()) job.stop();
   activeJobs.clear();

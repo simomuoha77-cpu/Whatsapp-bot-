@@ -342,6 +342,12 @@ function createClientRoutes() {
   });
 
   router.post('/settings/regenerate-link', async (req, res) => {
+    // Scoped to the logged-in client's own bot only — a client can never
+    // regenerate or obtain another client's link, since botId comes from
+    // their session, not from user input. The new slug still resolves to
+    // the same bot, so only the number registered on this account can
+    // complete pairing (the QR/pairing flow logs into that bot's own
+    // WhatsApp session).
     const botId = req.session.clientBotId;
     const bot = await getBotById(botId);
     if (!bot) return res.redirect('/client/dashboard');
@@ -354,6 +360,7 @@ function createClientRoutes() {
     res.redirect('/client/dashboard');
   });
 
+  // --- Client-controlled feature settings (mirrors /admin toggles, scoped to own bot) ---
   router.post('/settings/toggle', async (req, res) => {
     const botId = req.session.clientBotId;
     const feature = req.body.feature;
@@ -420,11 +427,60 @@ function createClientRoutes() {
 
   router.post('/settings/keywords/:keywordId/delete', async (req, res) => {
     const botId = req.session.clientBotId;
+    // Ensure the keyword belongs to this client's own bot before deleting.
     const owned = await getAllKeywordResponses(botId);
     if (owned.some((k) => k.id === parseInt(req.params.keywordId, 10))) {
       await deleteKeywordResponse(parseInt(req.params.keywordId, 10));
     }
     res.redirect('/client/dashboard');
+  });
+
+  router.post('/pay', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const plan = req.body.plan === 'yearly' ? 'yearly' : 'monthly';
+    const phoneNumber = (req.body.phoneNumber || '').replace(/[^0-9]/g, '');
+
+    if (!phoneNumber) {
+      return res.send(layout('Error', '<p>Invalid phone number.</p><a href="/client/dashboard">Back</a>'));
+    }
+
+    const pricing = await getPricingSettings();
+    const amount = plan === 'yearly' ? pricing.yearly_price : pricing.monthly_price;
+    const callbackUrl = `${req.protocol}://${req.get('host')}/client/payment-callback`;
+
+    try {
+      const result = await initiateStkPush({
+        phoneNumber,
+        amount,
+        accountReference: `BOT${botId}`,
+        transactionDesc: `${plan} subscription`,
+        callbackUrl,
+      });
+
+      await createPaymentRecord({
+        botId,
+        checkoutRequestId: result.CheckoutRequestID,
+        merchantRequestId: result.MerchantRequestID,
+        phoneNumber,
+        amount,
+        plan,
+      });
+
+      res.send(layout('Check your phone', `
+        <h2>📱 Check your phone</h2>
+        <p>An M-Pesa payment prompt has been sent to ${phoneNumber}. Enter your PIN to complete the payment.</p>
+        <p>This page will refresh automatically.</p>
+        <meta http-equiv="refresh" content="8;url=/client/dashboard">
+        <a href="/client/dashboard">Back to dashboard</a>
+      `));
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to initiate STK push');
+      res.send(layout('Payment failed', `
+        <h2>Payment request failed</h2>
+        <p>${err.message}</p>
+        <a href="/client/dashboard">Back</a>
+      `));
+    }
   });
 
   return router;

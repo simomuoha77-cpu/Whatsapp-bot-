@@ -146,6 +146,31 @@ CREATE TABLE IF NOT EXISTS reminders (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Tracks statuses the bot itself has posted (both scheduled auto-posts and
+-- manual posts), so we can show "who viewed my status" in the dashboard.
+-- One row per posted status, keyed by its own WhatsApp message id.
+CREATE TABLE IF NOT EXISTS own_status_posts (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,       -- the status's own WAMessageKey.id
+  source TEXT NOT NULL DEFAULT 'manual', -- 'manual' | 'scheduled'
+  caption TEXT,
+  posted_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (bot_id, message_id)
+);
+
+-- One row per contact who has viewed one of the bot's own posted statuses,
+-- populated from Baileys' message-receipt.update event (read receipts).
+CREATE TABLE IF NOT EXISTS own_status_views (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  status_post_id INTEGER NOT NULL REFERENCES own_status_posts(id) ON DELETE CASCADE,
+  viewer_jid TEXT NOT NULL,
+  viewer_name TEXT,
+  viewed_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (status_post_id, viewer_jid)
+);
+
 -- Stores each bot's WhatsApp login credentials (the Baileys "auth state"),
 -- so sessions survive deploys/restarts on Render's free tier, which wipes
 -- the filesystem on every deploy but persists Postgres data.
@@ -321,24 +346,4 @@ CREATE TABLE IF NOT EXISTS platform_admins (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS own_status_posts (
-  id SERIAL PRIMARY KEY,
-  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  message_id TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'manual',
-  caption TEXT,
-  posted_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE (bot_id, message_id)
-);
-
-CREATE TABLE IF NOT EXISTS own_status_views (
-  id SERIAL PRIMARY KEY,
-  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  status_post_id INTEGER NOT NULL REFERENCES own_status_posts(id) ON DELETE CASCADE,
-  viewer_jid TEXT NOT NULL,
-  viewer_name TEXT,
-  viewed_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE (status_post_id, viewer_jid)
 );
