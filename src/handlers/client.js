@@ -7,7 +7,23 @@ const { startTrial, getSubscription, isSubscriptionActive, extendSubscription } 
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
-const { startBotSocket } = require('../utils/botManager');
+const { startBotSocket, getBotState } = require('../utils/botManager');
+const {
+  FEATURE_COLUMNS,
+  FEATURE_LABELS,
+  STEALTH_READ_MODES,
+  STEALTH_READ_MODE_LABELS,
+  AI_PROVIDERS,
+  getFeatures,
+  setFeature,
+  setAutoReplyMessage,
+  setWelcomeMessage,
+  setAwayMessage,
+  setAiProvider,
+  setAiSystemPrompt,
+  setStealthReadMode,
+} = require('../db/botFeatures');
+const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
 const logger = require('../utils/logger');
 
 function layout(title, body) {
@@ -137,6 +153,29 @@ function createClientRoutes() {
       </div>
     `).join('') || '<p>No payments yet.</p>';
 
+    const features = await getFeatures(botId);
+    const keywordResponses = await getAllKeywordResponses(botId);
+
+    const featureRows = FEATURE_COLUMNS.map((col) => `
+      <div class="row">
+        <span>${FEATURE_LABELS[col]}</span>
+        <form method="POST" action="/client/settings/toggle" style="width:auto;display:flex;gap:8px;align-items:center;">
+          <input type="hidden" name="feature" value="${col}" />
+          <span class="pill ${features[col] ? 'on' : 'off'}">${features[col] ? 'ON' : 'OFF'}</span>
+          <button type="submit" style="width:auto;">Toggle</button>
+        </form>
+      </div>
+    `).join('');
+
+    const keywordRows = keywordResponses.map((k) => `
+      <div class="row">
+        <span><strong>"${k.keyword}"</strong> → ${k.response.slice(0, 60)}${k.response.length > 60 ? '...' : ''}</span>
+        <form method="POST" action="/client/settings/keywords/${k.id}/delete" style="width:auto;">
+          <button type="submit" class="danger" style="width:auto;">Delete</button>
+        </form>
+      </div>
+    `).join('') || '<p>No keyword responses set up yet.</p>';
+
     res.send(layout('Dashboard', `
       <h2>Your Bot</h2>
       <div class="card">
@@ -162,8 +201,153 @@ function createClientRoutes() {
         ${paymentRows}
       </div>
 
+      <div class="card">
+        <h3>⚙️ Bot Features</h3>
+        <p><small>Turn features on/off for your own bot. Your platform admin can also override these.</small></p>
+        ${featureRows}
+      </div>
+
+      <div class="card">
+        <h3>Stealth Read Mode</h3>
+        <p><small>Controls whether incoming messages get marked as "read" (blue ticks) on the sender's side.</small></p>
+        <form method="POST" action="/client/settings/stealth-mode">
+          <select name="mode">
+            ${STEALTH_READ_MODES.map((m) => `
+              <option value="${m}" ${features.stealth_read_mode === m ? 'selected' : ''}>
+                ${STEALTH_READ_MODE_LABELS[m]}
+              </option>
+            `).join('')}
+          </select>
+          <button type="submit">Save</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Auto-reply message</h3>
+        <form method="POST" action="/client/settings/reply-message">
+          <input name="message" value="${(features.auto_reply_message || '').replace(/"/g, '&quot;')}" />
+          <button type="submit">Save</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Welcome message</h3>
+        <p><small>Sent once, the first time a contact messages this bot.</small></p>
+        <form method="POST" action="/client/settings/welcome-message">
+          <input name="message" value="${(features.welcome_message_text || '').replace(/"/g, '&quot;')}" />
+          <button type="submit">Save</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Away message</h3>
+        <form method="POST" action="/client/settings/away-message">
+          <input name="message" value="${(features.away_message_text || '').replace(/"/g, '&quot;')}" />
+          <button type="submit">Save</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>🤖 AI Chat Assistant</h3>
+        <form method="POST" action="/client/settings/ai-provider">
+          <select name="provider">
+            ${AI_PROVIDERS.map((p) => `<option value="${p}" ${features.ai_provider === p ? 'selected' : ''}>${p}</option>`).join('')}
+          </select>
+          <button type="submit">Save Provider</button>
+        </form>
+        <form method="POST" action="/client/settings/ai-prompt" style="margin-top:10px;">
+          <input name="prompt" value="${(features.ai_system_prompt || '').replace(/"/g, '&quot;')}" placeholder="System prompt / personality" />
+          <button type="submit">Save Prompt</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Keyword Responses</h3>
+        ${keywordRows}
+        <form method="POST" action="/client/settings/keywords">
+          <input name="keyword" placeholder="Keyword (e.g. 'price')" required />
+          <input name="response" placeholder="Response to send" required />
+          <button type="submit">Add Keyword Response</button>
+        </form>
+      </div>
+
       <p><a href="/client/logout">Log out</a></p>
     `));
+  });
+
+  // --- Client-controlled feature settings (mirrors /admin toggles, scoped to own bot) ---
+  router.post('/settings/toggle', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const feature = req.body.feature;
+    if (FEATURE_COLUMNS.includes(feature)) {
+      const current = await getFeatures(botId);
+      await setFeature(botId, feature, !current[feature]);
+    }
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/stealth-mode', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const mode = req.body.mode;
+    if (STEALTH_READ_MODES.includes(mode)) {
+      await setStealthReadMode(botId, mode);
+      try {
+        const live = getBotState(botId);
+        if (live && live.sock && live.status === 'connected') {
+          const receiptsValue = mode === 'normal' ? 'all' : 'none';
+          await live.sock.updateReadReceiptsPrivacy(receiptsValue);
+        }
+      } catch (err) {
+        // Non-fatal — will still apply on next reconnect via botManager.js
+      }
+    }
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/reply-message', async (req, res) => {
+    await setAutoReplyMessage(req.session.clientBotId, req.body.message || '');
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/welcome-message', async (req, res) => {
+    await setWelcomeMessage(req.session.clientBotId, req.body.message || '');
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/away-message', async (req, res) => {
+    await setAwayMessage(req.session.clientBotId, req.body.message || '');
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/ai-provider', async (req, res) => {
+    if (AI_PROVIDERS.includes(req.body.provider)) {
+      await setAiProvider(req.session.clientBotId, req.body.provider);
+    }
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/ai-prompt', async (req, res) => {
+    await setAiSystemPrompt(req.session.clientBotId, req.body.prompt || '');
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/keywords', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const { keyword, response } = req.body;
+    if (keyword && response) {
+      await addKeywordResponse(botId, keyword, response);
+    }
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/keywords/:keywordId/delete', async (req, res) => {
+    const botId = req.session.clientBotId;
+    // Ensure the keyword belongs to this client's own bot before deleting.
+    const owned = await getAllKeywordResponses(botId);
+    if (owned.some((k) => k.id === parseInt(req.params.keywordId, 10))) {
+      await deleteKeywordResponse(parseInt(req.params.keywordId, 10));
+    }
+    res.redirect('/client/dashboard');
   });
 
   router.post('/pay', async (req, res) => {
