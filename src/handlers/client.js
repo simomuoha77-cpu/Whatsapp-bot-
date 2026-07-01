@@ -1,13 +1,14 @@
 const express = require('express');
 const crypto = require('crypto');
 const { requireClientAuth } = require('../utils/clientAuth');
-const { createBot } = require('../db/bots');
+const { createBot, getBotById } = require('../db/bots');
 const { createClientAccount, verifyClientLogin, getClientAccountByPhone, getClientAccountByBotId } = require('../db/clientAccounts');
 const { startTrial, getSubscription, isSubscriptionActive, extendSubscription } = require('../db/subscriptions');
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
-const { startBotSocket, getBotState } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
+const { query } = require('../db/pool');
 const {
   FEATURE_COLUMNS,
   FEATURE_LABELS,
@@ -124,9 +125,12 @@ function createClientRoutes() {
   });
 
   router.use(requireClientAuth);
-
   router.get('/dashboard', async (req, res) => {
     const botId = req.session.clientBotId;
+    const bot = await getBotById(botId);
+    const live = getBotState(botId);
+    const connectionStatus = live?.status || bot?.status || 'pending';
+    const onboardingUrl = bot ? `${req.protocol}://${req.get('host')}/connect/${bot.slug}` : null;
     const sub = await getSubscription(botId);
     const active = await isSubscriptionActive(botId);
     const pricing = await getPricingSettings();
@@ -184,6 +188,21 @@ function createClientRoutes() {
       </div>
 
       <div class="card">
+        <h3>📱 WhatsApp Connection</h3>
+        <p><span class="pill ${connectionStatus === 'connected' ? 'on' : 'off'}">${connectionStatus.toUpperCase()}</span></p>
+        ${connectionStatus === 'connected' ? `
+          <p><small>Your WhatsApp is linked. If you ever unlink this device from WhatsApp (Settings → Linked Devices), come back here and tap the button below to get a fresh link to reconnect.</small></p>
+        ` : `
+          <p><small>Your bot isn't connected right now. Use the link below to scan a QR code or enter a pairing code with the same WhatsApp number you registered with.</small></p>
+        `}
+        ${onboardingUrl ? `<code style="display:block;margin:10px 0;word-break:break-all;">${onboardingUrl}</code>` : ''}
+        <form method="POST" action="/client/settings/regenerate-link">
+          <button type="submit">Generate new connection link</button>
+        </form>
+        <p><small>This link only works with your registered number (${req.session.clientPhoneNumber}). Generating a new one invalidates the old link.</small></p>
+      </div>
+
+      <div class="card">
         <h3>Subscribe / Renew</h3>
         <p>Monthly: KES ${pricing.monthly_price} &nbsp;|&nbsp; Yearly: KES ${pricing.yearly_price}</p>
         <form method="POST" action="/client/pay">
@@ -206,7 +225,6 @@ function createClientRoutes() {
         <p><small>Turn features on/off for your own bot. Your platform admin can also override these.</small></p>
         ${featureRows}
       </div>
-
       <div class="card">
         <h3>Stealth Read Mode</h3>
         <p><small>Controls whether incoming messages get marked as "read" (blue ticks) on the sender's side.</small></p>
@@ -275,7 +293,19 @@ function createClientRoutes() {
     `));
   });
 
-  // --- Client-controlled feature settings (mirrors /admin toggles, scoped to own bot) ---
+  router.post('/settings/regenerate-link', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const bot = await getBotById(botId);
+    if (!bot) return res.redirect('/client/dashboard');
+    await deleteBotSession(botId);
+    const newSlug = crypto.randomBytes(6).toString('hex');
+    await query('UPDATE bots SET slug = $1, status = $2 WHERE id = $3', [newSlug, 'pending', botId]);
+    await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch((err) =>
+      logger.error({ err, botId }, 'Failed to restart bot socket on client link regeneration')
+    );
+    res.redirect('/client/dashboard');
+  });
+
   router.post('/settings/toggle', async (req, res) => {
     const botId = req.session.clientBotId;
     const feature = req.body.feature;
@@ -342,62 +372,12 @@ function createClientRoutes() {
 
   router.post('/settings/keywords/:keywordId/delete', async (req, res) => {
     const botId = req.session.clientBotId;
-    // Ensure the keyword belongs to this client's own bot before deleting.
     const owned = await getAllKeywordResponses(botId);
     if (owned.some((k) => k.id === parseInt(req.params.keywordId, 10))) {
       await deleteKeywordResponse(parseInt(req.params.keywordId, 10));
     }
     res.redirect('/client/dashboard');
   });
-
-  router.post('/pay', async (req, res) => {
-    const botId = req.session.clientBotId;
-    const plan = req.body.plan === 'yearly' ? 'yearly' : 'monthly';
-    const phoneNumber = (req.body.phoneNumber || '').replace(/[^0-9]/g, '');
-
-    if (!phoneNumber) {
-      return res.send(layout('Error', '<p>Invalid phone number.</p><a href="/client/dashboard">Back</a>'));
-    }
-
-    const pricing = await getPricingSettings();
-    const amount = plan === 'yearly' ? pricing.yearly_price : pricing.monthly_price;
-    const callbackUrl = `${req.protocol}://${req.get('host')}/client/payment-callback`;
-
-    try {
-      const result = await initiateStkPush({
-        phoneNumber,
-        amount,
-        accountReference: `BOT${botId}`,
-        transactionDesc: `${plan} subscription`,
-        callbackUrl,
-      });
-
-      await createPaymentRecord({
-        botId,
-        checkoutRequestId: result.CheckoutRequestID,
-        merchantRequestId: result.MerchantRequestID,
-        phoneNumber,
-        amount,
-        plan,
-      });
-
-      res.send(layout('Check your phone', `
-        <h2>📱 Check your phone</h2>
-        <p>An M-Pesa payment prompt has been sent to ${phoneNumber}. Enter your PIN to complete the payment.</p>
-        <p>This page will refresh automatically.</p>
-        <meta http-equiv="refresh" content="8;url=/client/dashboard">
-        <a href="/client/dashboard">Back to dashboard</a>
-      `));
-    } catch (err) {
-      logger.error({ err, botId }, 'Failed to initiate STK push');
-      res.send(layout('Payment failed', `
-        <h2>Payment request failed</h2>
-        <p>${err.message}</p>
-        <a href="/client/dashboard">Back</a>
-      `));
-    }
-  });
-
   return router;
 }
 
