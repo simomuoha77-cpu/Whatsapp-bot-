@@ -322,3 +322,23 @@ CREATE TABLE IF NOT EXISTS platform_admins (
   password_hash TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS own_status_posts (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'manual',
+  caption TEXT,
+  posted_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (bot_id, message_id)
+);
+
+CREATE TABLE IF NOT EXISTS own_status_views (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  status_post_id INTEGER NOT NULL REFERENCES own_status_posts(id) ON DELETE CASCADE,
+  viewer_jid TEXT NOT NULL,
+  viewer_name TEXT,
+  viewed_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (status_post_id, viewer_jid)
+);

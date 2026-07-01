@@ -25,6 +25,7 @@ const {
   setStealthReadMode,
 } = require('../db/botFeatures');
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
+const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownStatusPosts');
 const logger = require('../utils/logger');
 
 function layout(title, body) {
@@ -125,6 +126,7 @@ function createClientRoutes() {
   });
 
   router.use(requireClientAuth);
+
   router.get('/dashboard', async (req, res) => {
     const botId = req.session.clientBotId;
     const bot = await getBotById(botId);
@@ -159,6 +161,7 @@ function createClientRoutes() {
 
     const features = await getFeatures(botId);
     const keywordResponses = await getAllKeywordResponses(botId);
+    const statusPosts = await getRecentPostsWithViewers(botId, 10);
 
     const featureRows = FEATURE_COLUMNS.map((col) => `
       <div class="row">
@@ -225,6 +228,7 @@ function createClientRoutes() {
         <p><small>Turn features on/off for your own bot. Your platform admin can also override these.</small></p>
         ${featureRows}
       </div>
+
       <div class="card">
         <h3>Stealth Read Mode</h3>
         <p><small>Controls whether incoming messages get marked as "read" (blue ticks) on the sender's side.</small></p>
@@ -289,8 +293,52 @@ function createClientRoutes() {
         </form>
       </div>
 
+      <div class="card">
+        <h3>👀 Status Views</h3>
+        <p><small>Post a status from here, or wait for your scheduled posts — either way, viewers show up below once they open it. Only tracked while your bot is connected and only counts views that happen after posting.</small></p>
+        <form method="POST" action="/client/settings/post-status">
+          <input name="caption" placeholder="What's on your mind?" required />
+          <button type="submit">Post to Status Now</button>
+        </form>
+        ${statusPosts.length ? statusPosts.map((p) => `
+          <div class="row" style="flex-direction:column;align-items:flex-start;gap:6px;">
+            <div style="display:flex;justify-content:space-between;width:100%;">
+              <span>${p.source === 'scheduled' ? '⏰' : '✍️'} "${(p.caption || '').slice(0, 60)}${(p.caption || '').length > 60 ? '...' : ''}"</span>
+              <span class="pill on">${p.viewCount} view${p.viewCount === 1 ? '' : 's'}</span>
+            </div>
+            <small>${new Date(p.posted_at).toLocaleString()}</small>
+            ${p.viewers.length ? `
+              <div style="width:100%;padding-left:8px;">
+                ${p.viewers.map((v) => `<div><small>${v.viewer_name || v.viewer_jid.split('@')[0]} — ${new Date(v.viewed_at).toLocaleString()}</small></div>`).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `).join('') : '<p>No status posts tracked yet.</p>'}
+      </div>
+
       <p><a href="/client/logout">Log out</a></p>
     `));
+  });
+
+  router.post('/settings/post-status', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const caption = (req.body.caption || '').trim();
+    if (!caption) return res.redirect('/client/dashboard');
+
+    const live = getBotState(botId);
+    if (!live || !live.sock || live.status !== 'connected') {
+      return res.send(layout('Not connected', `<p>Your bot isn't connected right now, so it can't post a status.</p><a href="/client/dashboard">Back</a>`));
+    }
+
+    try {
+      const sent = await live.sock.sendMessage('status@broadcast', { text: caption });
+      if (sent?.key?.id) {
+        await recordOwnStatusPost(botId, sent.key.id, { source: 'manual', caption });
+      }
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to post manual status from client dashboard');
+    }
+    res.redirect('/client/dashboard');
   });
 
   router.post('/settings/regenerate-link', async (req, res) => {
@@ -378,6 +426,7 @@ function createClientRoutes() {
     }
     res.redirect('/client/dashboard');
   });
+
   return router;
 }
 

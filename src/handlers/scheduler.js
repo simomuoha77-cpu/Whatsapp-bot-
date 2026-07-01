@@ -10,6 +10,7 @@ const {
   markReminderRun,
 } = require('../db/reminders');
 const { getBotState } = require('../utils/botManager');
+const { recordOwnStatusPost } = require('../db/ownStatusPosts');
 
 const activeJobs = new Map();
 
@@ -22,7 +23,10 @@ async function postScheduledStatus(post) {
   try {
     const message = post.caption ? { text: post.caption } : null;
     if (!message) return;
-    await botState.sock.sendMessage('status@broadcast', message);
+    const sent = await botState.sock.sendMessage('status@broadcast', message);
+    if (sent?.key?.id) {
+      await recordOwnStatusPost(post.bot_id, sent.key.id, { source: 'scheduled', caption: post.caption });
+    }
     await markScheduledStatusPostRun(post.id);
     logger.info({ postId: post.id, botId: post.bot_id }, 'Posted scheduled status');
   } catch (err) {
@@ -45,12 +49,6 @@ async function sendReminder(reminder) {
   }
 }
 
-/**
- * Loads all active scheduled status posts and recurring reminders across
- * ALL bots and registers cron jobs for them. Each job looks up the live
- * socket for its bot_id at run time, so it always uses the current
- * connection (even after reconnects).
- */
 async function startScheduler() {
   for (const job of activeJobs.values()) job.stop();
   activeJobs.clear();
