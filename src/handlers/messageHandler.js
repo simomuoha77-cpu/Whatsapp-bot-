@@ -18,6 +18,16 @@ const fs = require('fs');
 
 const PREFIX = process.env.COMMAND_PREFIX || '!';
 const AUTO_REPLY_COOLDOWN_MS = parseInt(process.env.AUTO_REPLY_COOLDOWN_MINUTES || '60', 10) * 60 * 1000;
+// Instant replies to every message is a clear bot signature to WhatsApp's
+// detection. A short randomized delay before auto-replying/welcoming makes
+// the timing look like someone actually reading the message first.
+const REPLY_DELAY_MIN_MS = parseInt(process.env.REPLY_DELAY_MIN_MS || '1200', 10);
+const REPLY_DELAY_MAX_MS = parseInt(process.env.REPLY_DELAY_MAX_MS || '4000', 10);
+
+function replyDelay() {
+  const ms = Math.floor(Math.random() * (REPLY_DELAY_MAX_MS - REPLY_DELAY_MIN_MS + 1)) + REPLY_DELAY_MIN_MS;
+  return new Promise((res) => setTimeout(res, ms));
+}
 const lastAutoReplyAt = new Map(); // `${botId}:${jid}` -> timestamp
 
 function extractText(msg) {
@@ -224,6 +234,7 @@ function registerMessageHandler(sock, botId) {
         // Welcome Message: sent once, the very first time a contact messages
         // this bot. Independent of Auto Reply, which can fire repeatedly.
         if (features.welcome_message_enabled && isFirstMessageFromContact) {
+          await replyDelay();
           await reply(features.welcome_message_text || 'Welcome! Thanks for messaging us.');
         }
 
@@ -233,6 +244,7 @@ function registerMessageHandler(sock, botId) {
           const lastSent = lastAutoReplyAt.get(key) || 0;
           if (Date.now() - lastSent > AUTO_REPLY_COOLDOWN_MS) {
             lastAutoReplyAt.set(key, Date.now());
+            await replyDelay();
             await reply(features.auto_reply_message || "Thanks for your message! I'll reply shortly.");
           }
         }
