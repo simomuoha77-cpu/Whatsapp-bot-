@@ -168,7 +168,15 @@ async function startBotSocket(botId, slug, onReady) {
         // Exponential backoff: 3s, 6s, 12s, 24s... capped at 2 minutes.
         // A stable connection recovers quickly; an unstable one spaces its
         // retries out instead of retrying every few seconds forever.
-        const delayMs = Math.min(3000 * 2 ** (entry.reconnectAttempts - 1), 120000);
+        // Jitter is critical here: with many bots on one server, a shared
+        // disruption (deploy, restart, network blip) disconnects all of
+        // them at once. Without jitter, they'd all retry at the exact same
+        // moment every time — a synchronized reconnect storm that overloads
+        // the server and causes the very timeouts that trigger more
+        // reconnects. Randomizing +/-30% spreads retries out over time.
+        const baseDelay = Math.min(3000 * 2 ** (entry.reconnectAttempts - 1), 120000);
+        const jitter = baseDelay * (0.7 + Math.random() * 0.6); // 70%-130% of base
+        const delayMs = Math.round(jitter);
         logger.warn(
           { botId, statusCode, attempt: entry.reconnectAttempts, delayMs },
           'Bot disconnected, reconnecting with backoff...'
@@ -203,12 +211,21 @@ function requestPairingCodeForBot(botId, phoneNumber) {
  */
 async function startAllBots(onReady) {
   const result = await query('SELECT id, slug, status FROM bots');
-  for (const bot of result.rows) {
-    startBotSocket(bot.id, bot.slug, onReady).catch((err) =>
-      logger.error({ err, botId: bot.id }, 'Failed to start bot socket on startup')
-    );
-  }
-  logger.info({ count: result.rows.length }, 'Started sockets for all existing bots');
+  // Starting every bot's WebSocket at the exact same instant is what was
+  // causing the mass "statusCode 408" disconnect storms — the server
+  // can't establish/sync that many sessions simultaneously, so they time
+  // out, retry, and pile up again. Staggering startup by a few hundred ms
+  // per bot spreads the load out so each connection actually has a chance
+  // to establish before the next one starts.
+  const STAGGER_MS = parseInt(process.env.BOT_STARTUP_STAGGER_MS || '400', 10);
+  result.rows.forEach((bot, index) => {
+    setTimeout(() => {
+      startBotSocket(bot.id, bot.slug, onReady).catch((err) =>
+        logger.error({ err, botId: bot.id }, 'Failed to start bot socket on startup')
+      );
+    }, index * STAGGER_MS);
+  });
+  logger.info({ count: result.rows.length, staggerMs: STAGGER_MS }, 'Scheduled staggered startup for all existing bots');
 }
 
 async function deleteBotSession(botId) {
