@@ -131,7 +131,21 @@ function sanitizeFilenamePart(s) {
 async function reactToStatus(sock, msg, caption) {
   const emoji = pickEmojiForCaption(caption);
   await randomDelay(REACT_DELAY_MIN_MS, REACT_DELAY_MAX_MS);
-  await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } });
+
+  // Confirmed by the Baileys community (WhiskeySockets/Baileys#1029): reacting
+  // to a status requires statusJidList — without it, sendMessage resolves
+  // "successfully" but the reaction is never actually delivered to the
+  // status owner, so nothing shows on their end even though our logs say
+  // "Reacted to status". Both the poster (participant) and our own id need
+  // to be in the list, or Baileys throws EKEYTYPE trying to look up devices
+  // for an undefined key — so we only attach it when participant is present,
+  // and fall back to a plain react (better than crashing the task) if not.
+  const participant = msg.key.participant;
+  const opts = participant
+    ? { statusJidList: [...new Set([participant, sock.user?.id].filter(Boolean))] }
+    : undefined;
+
+  await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } }, opts);
   return emoji;
 }
 
