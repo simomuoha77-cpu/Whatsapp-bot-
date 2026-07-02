@@ -13,6 +13,8 @@ if (!fs.existsSync(STATUS_MEDIA_ROOT)) fs.mkdirSync(STATUS_MEDIA_ROOT, { recursi
 const STATUS_JID = 'status@broadcast';
 const REACT_DELAY_MIN_MS = parseInt(process.env.STATUS_REACT_DELAY_MIN_MS || '1500', 10);
 const REACT_DELAY_MAX_MS = parseInt(process.env.STATUS_REACT_DELAY_MAX_MS || '5000', 10);
+const VIEW_DELAY_MIN_MS = parseInt(process.env.STATUS_VIEW_DELAY_MIN_MS || '800', 10);
+const VIEW_DELAY_MAX_MS = parseInt(process.env.STATUS_VIEW_DELAY_MAX_MS || '3000', 10);
 
 // Baileys can redeliver the same status update multiple times (retries,
 // multi-device sync, etc.). Without deduplication, the bot would react to
@@ -177,11 +179,18 @@ function registerStatusHandler(sock, botId) {
       }
 
       if (features.auto_view_status) {
-        try {
-          await sock.readMessages([msg.key]);
-        } catch (err) {
-          logger.warn({ err, botId }, 'Failed to mark status as viewed');
-        }
+        // Queued and delayed, same as reactions — marking many statuses as
+        // viewed in the same instant is a bot-like pattern WhatsApp's spam
+        // detection watches for. Spacing them out mimics a real person
+        // scrolling through their status feed instead.
+        enqueueReaction(botId, async () => {
+          await randomDelay(VIEW_DELAY_MIN_MS, VIEW_DELAY_MAX_MS);
+          try {
+            await sock.readMessages([msg.key]);
+          } catch (err) {
+            logger.warn({ err, botId }, 'Failed to mark status as viewed');
+          }
+        });
       }
 
       if (features.auto_react_status) {

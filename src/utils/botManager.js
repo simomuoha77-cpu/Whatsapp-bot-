@@ -69,6 +69,7 @@ async function startBotSocket(botId, slug, onReady) {
     pairingCode: null,
     pendingPairingNumber: null,
     slug,
+    reconnectAttempts: 0,
   };
   activeBots.set(botId, entry);
 
@@ -105,6 +106,7 @@ async function startBotSocket(botId, slug, onReady) {
       entry.status = 'connected';
       entry.qr = null;
       entry.pairingCode = null;
+      entry.reconnectAttempts = 0;
       const ownNumber = sock.user?.id?.split(':')[0]?.split('@')[0] || null;
       await updateBotStatusInDb(botId, 'connected', {
         phone_number: ownNumber,
@@ -145,8 +147,33 @@ async function startBotSocket(botId, slug, onReady) {
         activeBots.delete(botId);
         await clearPostgresAuthState(botId);
       } else {
-        logger.warn({ botId, statusCode }, 'Bot disconnected, reconnecting in 3s...');
-        setTimeout(() => startBotSocket(botId, slug, onReady), 3000);
+        entry.reconnectAttempts = (entry.reconnectAttempts || 0) + 1;
+
+        // Cap retries — repeatedly reconnecting in a tight loop is exactly
+        // the kind of "automated" traffic pattern WhatsApp's spam detection
+        // flags. After too many failed attempts in a row, back off and
+        // require a manual reconnect (via regenerate-link) instead of
+        // hammering their servers indefinitely.
+        const MAX_RECONNECT_ATTEMPTS = 8;
+        if (entry.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+          logger.error(
+            { botId, attempts: entry.reconnectAttempts },
+            'Too many reconnect failures in a row — stopping automatic retries to avoid triggering WhatsApp spam detection. Client must regenerate their connection link to reconnect.'
+          );
+          activeBots.delete(botId);
+          await updateBotStatusInDb(botId, 'disconnected');
+          return;
+        }
+
+        // Exponential backoff: 3s, 6s, 12s, 24s... capped at 2 minutes.
+        // A stable connection recovers quickly; an unstable one spaces its
+        // retries out instead of retrying every few seconds forever.
+        const delayMs = Math.min(3000 * 2 ** (entry.reconnectAttempts - 1), 120000);
+        logger.warn(
+          { botId, statusCode, attempt: entry.reconnectAttempts, delayMs },
+          'Bot disconnected, reconnecting with backoff...'
+        );
+        setTimeout(() => startBotSocket(botId, slug, onReady), delayMs);
       }
     }
   });
