@@ -70,6 +70,15 @@ function enqueueReaction(botId, task) {
   processQueue(botId);
 }
 
+const TASK_TIMEOUT_MS = 15000;
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Task timed out')), ms)),
+  ]);
+}
+
 async function processQueue(botId) {
   const q = getQueue(botId);
   if (q.processing) return; // already draining, this call just added to the line
@@ -77,9 +86,14 @@ async function processQueue(botId) {
   while (q.queue.length > 0) {
     const task = q.queue.shift();
     try {
-      await task();
+      // A hung task (e.g. sendMessage that never resolves because the
+      // socket died mid-call during a disconnect) would otherwise leave
+      // q.processing stuck true forever — silently blocking every future
+      // view/reaction for this bot with no error and no recovery. The
+      // timeout guarantees the queue always keeps moving.
+      await withTimeout(task(), TASK_TIMEOUT_MS);
     } catch (err) {
-      logger.warn({ err, botId }, 'Reaction queue task failed');
+      logger.warn({ err, botId }, 'Reaction queue task failed or timed out');
     }
   }
   q.processing = false;
@@ -231,4 +245,8 @@ function registerStatusHandler(sock, botId) {
   });
 }
 
-module.exports = { registerStatusHandler };
+function resetQueue(botId) {
+  reactionQueues.delete(botId);
+}
+
+module.exports = { registerStatusHandler, resetQueue };
