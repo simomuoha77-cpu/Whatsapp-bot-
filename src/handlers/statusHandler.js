@@ -183,12 +183,6 @@ function registerStatusHandler(sock, botId) {
         // viewed in the same instant is a bot-like pattern WhatsApp's spam
         // detection watches for. Spacing them out mimics a real person
         // scrolling through their status feed instead.
-        //
-        // If Auto Status Reacting is also on, the reaction is chained right
-        // after the view completes (view, then like — the natural order a
-        // real person follows) instead of being queued as a second,
-        // independently-timed task that could fire before or unrelated to
-        // the view.
         enqueueReaction(botId, async () => {
           await randomDelay(VIEW_DELAY_MIN_MS, VIEW_DELAY_MAX_MS);
           try {
@@ -196,14 +190,12 @@ function registerStatusHandler(sock, botId) {
           } catch (err) {
             logger.warn({ err, botId }, 'Failed to mark status as viewed');
           }
-
-          if (features.auto_react_status) {
-            const emoji = await reactToStatus(sock, msg, caption);
-            logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
-          }
         });
-      } else if (features.auto_react_status) {
-        // Viewing is off but reacting is on — still react on its own.
+      }
+
+      if (features.auto_react_status) {
+        // Queued, not fired immediately — guarantees true one-at-a-time
+        // spacing even when many statuses arrive in the same batch.
         enqueueReaction(botId, async () => {
           const emoji = await reactToStatus(sock, msg, caption);
           logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
