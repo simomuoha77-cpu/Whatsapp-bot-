@@ -21,13 +21,21 @@ const KEYWORD_EMOJI_MAP = [
 
 const DEFAULT_EMOJI = '👍';
 
+// Used when there's no caption or no keyword match (most photo/video statuses).
+// A random pick from here instead of a fixed emoji is what makes reactions look human.
+const FALLBACK_EMOJI_POOL = ['👍', '❤️', '🔥', '😍', '😂', '👏', '💯', '😮'];
+
+function pickRandomFallbackEmoji() {
+  return FALLBACK_EMOJI_POOL[Math.floor(Math.random() * FALLBACK_EMOJI_POOL.length)];
+}
+
 function pickEmojiForCaption(caption) {
-  if (!caption || typeof caption !== 'string') return DEFAULT_EMOJI;
+  if (!caption || typeof caption !== 'string') return pickRandomFallbackEmoji();
   const lower = caption.toLowerCase();
   for (const { keywords, emoji } of KEYWORD_EMOJI_MAP) {
     if (keywords.some((kw) => lower.includes(kw))) return emoji;
   }
-  return DEFAULT_EMOJI;
+  return pickRandomFallbackEmoji();
 }
 
-module.exports = { pickEmojiForCaption, KEYWORD_EMOJI_MAP, DEFAULT_EMOJI };
+module.exports = { pickEmojiForCaption, KEYWORD_EMOJI_MAP, DEFAULT_EMOJI, FALLBACK_EMOJI_POOL };
