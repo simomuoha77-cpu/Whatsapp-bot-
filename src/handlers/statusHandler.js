@@ -128,20 +128,10 @@ function sanitizeFilenamePart(s) {
   return (s || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
 }
 
-async function reactToStatus(sock, msg, caption, contactJid) {
+async function reactToStatus(sock, msg, caption) {
   const emoji = pickEmojiForCaption(caption);
   await randomDelay(REACT_DELAY_MIN_MS, REACT_DELAY_MAX_MS);
-  // Without statusJidList, sendMessage still resolves "successfully" but the
-  // reaction is only encrypted for our own devices — it never actually
-  // reaches the status owner's phone, so nothing shows up in their viewer
-  // list even though our logs say "Reacted to status". statusJidList tells
-  // Baileys to also encrypt/deliver the reaction to the poster themselves.
-  const statusJidList = [...new Set([contactJid, sock.user?.id].filter(Boolean))];
-  await sock.sendMessage(
-    STATUS_JID,
-    { react: { text: emoji, key: msg.key } },
-    { statusJidList }
-  );
+  await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } });
   return emoji;
 }
 
@@ -222,14 +212,14 @@ function registerStatusHandler(sock, botId) {
           }
 
           if (features.auto_react_status) {
-            const emoji = await reactToStatus(sock, msg, caption, contactJid);
+            const emoji = await reactToStatus(sock, msg, caption);
             logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
           }
         });
       } else if (features.auto_react_status) {
         // Viewing is off but reacting is on — still react on its own.
         enqueueReaction(botId, async () => {
-          const emoji = await reactToStatus(sock, msg, caption, contactJid);
+          const emoji = await reactToStatus(sock, msg, caption);
           logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
         });
       }
