@@ -203,6 +203,19 @@ function registerMessageHandler(sock, botId) {
           } catch (err) {
             logger.warn({ err, botId, sender }, 'Failed to mark message as read');
           }
+        } else {
+          // Explicitly force this chat to stay marked unread, rather than
+          // just never calling readMessages(). This is a stronger signal
+          // than silence — it directly tells WhatsApp not to consider this
+          // read, instead of relying only on the absence of a call.
+          try {
+            await sock.chatModify(
+              { markRead: false, lastMessages: [{ key: msg.key, messageTimestamp: msg.messageTimestamp }] },
+              sender
+            );
+          } catch (err) {
+            logger.warn({ err, botId, sender }, 'Failed to force chat unread in stealth mode');
+          }
         }
 
         const reply = async (content) => {
