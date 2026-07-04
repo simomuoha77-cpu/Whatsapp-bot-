@@ -3,7 +3,6 @@ const path = require('path');
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const logger = require('../utils/logger');
 const { logStatusView } = require('../db/logs');
-const { pickEmojiForCaption } = require('../utils/statusEmoji');
 const { getFeatures } = require('../db/botFeatures');
 const { saveStatusMedia } = require('../db/statusSaves');
 
@@ -128,18 +127,14 @@ function sanitizeFilenamePart(s) {
   return (s || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
 }
 
-async function reactToStatus(sock, msg, caption) {
-  const emoji = pickEmojiForCaption(caption);
+async function reactToStatus(sock, msg) {
+  // WhatsApp's status viewer sheet only ever renders the native heart badge
+  // for a status reaction, no matter what emoji is actually sent underneath.
+  // Sending a rotating/keyword emoji just wastes effort on something that
+  // will always display as ❤️ anyway — so send the heart directly.
+  const emoji = '❤️';
   await randomDelay(REACT_DELAY_MIN_MS, REACT_DELAY_MAX_MS);
 
-  // Confirmed by the Baileys community (WhiskeySockets/Baileys#1029): reacting
-  // to a status requires statusJidList — without it, sendMessage resolves
-  // "successfully" but the reaction is never actually delivered to the
-  // status owner, so nothing shows on their end even though our logs say
-  // "Reacted to status". Both the poster (participant) and our own id need
-  // to be in the list, or Baileys throws EKEYTYPE trying to look up devices
-  // for an undefined key — so we only attach it when participant is present,
-  // and fall back to a plain react (better than crashing the task) if not.
   const participant = msg.key.participant;
   const opts = participant
     ? { statusJidList: [...new Set([participant, sock.user?.id].filter(Boolean))] }
@@ -226,14 +221,14 @@ function registerStatusHandler(sock, botId) {
           }
 
           if (features.auto_react_status) {
-            const emoji = await reactToStatus(sock, msg, caption);
+            const emoji = await reactToStatus(sock, msg);
             logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
           }
         });
       } else if (features.auto_react_status) {
         // Viewing is off but reacting is on — still react on its own.
         enqueueReaction(botId, async () => {
-          const emoji = await reactToStatus(sock, msg, caption);
+          const emoji = await reactToStatus(sock, msg);
           logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
         });
       }
