@@ -12,8 +12,8 @@ if (!fs.existsSync(STATUS_MEDIA_ROOT)) fs.mkdirSync(STATUS_MEDIA_ROOT, { recursi
 const STATUS_JID = 'status@broadcast';
 const REACT_DELAY_MIN_MS = parseInt(process.env.STATUS_REACT_DELAY_MIN_MS || '1500', 10);
 const REACT_DELAY_MAX_MS = parseInt(process.env.STATUS_REACT_DELAY_MAX_MS || '5000', 10);
-const VIEW_DELAY_MIN_MS = parseInt(process.env.STATUS_VIEW_DELAY_MIN_MS || '800', 10);
-const VIEW_DELAY_MAX_MS = parseInt(process.env.STATUS_VIEW_DELAY_MAX_MS || '3000', 10);
+const VIEW_DELAY_MIN_MS = parseInt(process.env.STATUS_VIEW_DELAY_MIN_MS || '150', 10);
+const VIEW_DELAY_MAX_MS = parseInt(process.env.STATUS_VIEW_DELAY_MAX_MS || '600', 10);
 
 // Baileys can redeliver the same status update multiple times (retries,
 // multi-device sync, etc.). Without deduplication, the bot would react to
@@ -39,34 +39,44 @@ function alreadyProcessed(botId, statusId) {
 }
 
 /**
- * Per-bot reaction queue. THE CORE FIX: previously, reactToStatus() was
- * called without awaiting it, so when WhatsApp delivered several statuses
- * at once (a common occurrence — multiple contacts posting around the same
- * time, or a backlog after reconnecting), every reaction's random delay
- * started counting down in parallel. They all ended up firing within the
- * same 1-2 second window instead of being spaced apart — a burst pattern
- * that WhatsApp's servers appear to silently drop rather than reject
- * outright (the send call still resolves "successfully" client-side, but
- * the reaction never actually becomes visible to other viewers).
+ * Two independent per-bot queues — one for views, one for reactions.
  *
- * This queue forces every reaction for a given bot to fully complete,
- * delay included, before the next one starts — so reactions are always
- * spaced out for real, never sent in a burst, regardless of how many
- * statuses arrive in the same batch from Baileys.
+ * THE CORE FIX (kept): previously, reactToStatus() was called without
+ * awaiting it, so when WhatsApp delivered several statuses at once (multiple
+ * contacts posting around the same time, or a backlog after reconnecting),
+ * every reaction's random delay started counting down in parallel and they
+ * all fired within the same 1-2 second window — a burst pattern WhatsApp's
+ * servers appear to silently drop rather than reject outright. Each queue
+ * still forces its own tasks to fully complete, delay included, one at a
+ * time, so reactions stay spaced out for real.
+ *
+ * WHY TWO QUEUES: views and reactions used to share one queue, chained
+ * view-then-react per status. That meant a reaction's 1.5-5s spacing delay
+ * blocked the *next* status's view from even starting — so during a busy
+ * period (several contacts posting close together), views could lag well
+ * behind when statuses were actually posted. Splitting them means viewing
+ * stays fast and immediate regardless of how backed up reactions are.
  */
+const viewQueues = new Map(); // botId -> { queue: [], processing: boolean }
 const reactionQueues = new Map(); // botId -> { queue: [], processing: boolean }
 
-function getQueue(botId) {
-  if (!reactionQueues.has(botId)) {
-    reactionQueues.set(botId, { queue: [], processing: false });
+function getQueue(map, botId) {
+  if (!map.has(botId)) {
+    map.set(botId, { queue: [], processing: false });
   }
-  return reactionQueues.get(botId);
+  return map.get(botId);
+}
+
+function enqueueView(botId, task) {
+  const q = getQueue(viewQueues, botId);
+  q.queue.push(task);
+  processQueue(viewQueues, botId);
 }
 
 function enqueueReaction(botId, task) {
-  const q = getQueue(botId);
+  const q = getQueue(reactionQueues, botId);
   q.queue.push(task);
-  processQueue(botId);
+  processQueue(reactionQueues, botId);
 }
 
 const TASK_TIMEOUT_MS = 15000;
@@ -78,8 +88,8 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-async function processQueue(botId) {
-  const q = getQueue(botId);
+async function processQueue(map, botId) {
+  const q = getQueue(map, botId);
   if (q.processing) return; // already draining, this call just added to the line
   q.processing = true;
   while (q.queue.length > 0) {
@@ -92,7 +102,7 @@ async function processQueue(botId) {
       // timeout guarantees the queue always keeps moving.
       await withTimeout(task(), TASK_TIMEOUT_MS);
     } catch (err) {
-      logger.warn({ err, botId }, 'Reaction queue task failed or timed out');
+      logger.warn({ err, botId }, 'View/reaction queue task failed or timed out');
     }
   }
   q.processing = false;
@@ -202,17 +212,10 @@ function registerStatusHandler(sock, botId) {
       }
 
       if (features.auto_view_status) {
-        // Queued and delayed, same as reactions — marking many statuses as
-        // viewed in the same instant is a bot-like pattern WhatsApp's spam
-        // detection watches for. Spacing them out mimics a real person
-        // scrolling through their status feed instead.
-        //
-        // If Auto Status Reacting is also on, the reaction is chained right
-        // after the view completes (view, then like — the natural order a
-        // real person follows) instead of being queued as a second,
-        // independently-timed task that could fire before or unrelated to
-        // the view.
-        enqueueReaction(botId, async () => {
+        // Fast, near-immediate queue — separate from reactions, so a
+        // backlog of reactions (each spaced 1.5-5s apart) never delays
+        // viewing the next status that comes in.
+        enqueueView(botId, async () => {
           await randomDelay(VIEW_DELAY_MIN_MS, VIEW_DELAY_MAX_MS);
           try {
             await sock.readMessages([msg.key]);
@@ -221,8 +224,10 @@ function registerStatusHandler(sock, botId) {
           }
 
           if (features.auto_react_status) {
-            const emoji = await reactToStatus(sock, msg);
-            logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+            enqueueReaction(botId, async () => {
+              const emoji = await reactToStatus(sock, msg);
+              logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+            });
           }
         });
       } else if (features.auto_react_status) {
