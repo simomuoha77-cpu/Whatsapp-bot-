@@ -115,21 +115,23 @@ async function startBotSocket(botId, slug, onReady) {
       });
       logger.info({ botId, ownNumber }, 'Bot connected to WhatsApp');
 
-      // NOTE: We deliberately do NOT gate this on Stealth Read Mode. That's
-      // the account-wide "Read Receipts" toggle under Settings > Privacy —
-      // and per WhatsApp's own docs, turning it off doesn't just hide
-      // message blue-ticks, it also hides this account's name from EVERY
-      // status viewer list, account-wide, with no way to separate the two.
-      // Stealth Read Mode is only supposed to affect message read receipts
-      // (handled per-message in messageHandler.js by simply skipping our
-      // own readMessages() call) — it was never meant to also hide status
-      // views. A previous version of this code toggled this off for
-      // stealth-mode bots; we force it back to 'all' here so any bot that
-      // was already affected self-heals on its next reconnect.
+      // This account-wide "Read Receipts" toggle is the ONLY thing that
+      // guarantees no blue tick — skipping our own readMessages() call
+      // alone isn't reliable enough in practice. But it also controls status
+      // view visibility, with no way to separate the two as a static
+      // setting. So: for 'normal' mode we leave it 'all' (receipts + status
+      // views both on, as expected). For 'stealth'/'no_mark', the resting
+      // state is 'none' (blue tick guaranteed off) — and statusHandler.js
+      // briefly flips it to 'all' only for the moment it's actually viewing
+      // or reacting to a status, then back to 'none' right after, so status
+      // views still show without permanently exposing message read receipts.
       try {
-        await sock.updateReadReceiptsPrivacy('all');
+        const { getFeatures } = require('../db/botFeatures');
+        const features = await getFeatures(botId);
+        const stealthMode = features.stealth_read_mode || 'normal';
+        await sock.updateReadReceiptsPrivacy(stealthMode === 'normal' ? 'all' : 'none');
       } catch (err) {
-        logger.warn({ err, botId }, 'Failed to reset read receipts privacy setting');
+        logger.warn({ err, botId }, 'Failed to set read receipts privacy setting');
       }
 
       if (onReady) onReady(sock, botId);

@@ -137,6 +137,38 @@ function sanitizeFilenamePart(s) {
   return (s || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
 }
 
+/**
+ * Briefly flips the account-wide read receipts privacy to 'all' for the
+ * duration of a single status view/react action, then back to 'none'
+ * immediately after — only when the bot's resting state is 'none' (i.e.
+ * Stealth/No-Mark). This is what lets status views stay visible while
+ * message read receipts stay off the rest of the time. There's a small,
+ * unavoidable window during the toggle where a message read elsewhere
+ * could theoretically also become visible — kept as short as possible by
+ * scoping it tightly around just this one action.
+ */
+async function withStatusVisibility(sock, stealthMode, task) {
+  const needsToggle = stealthMode && stealthMode !== 'normal';
+  if (needsToggle) {
+    try {
+      await sock.updateReadReceiptsPrivacy('all');
+    } catch (err) {
+      logger.warn({ err }, 'Failed to enable read receipts for status visibility');
+    }
+  }
+  try {
+    return await task();
+  } finally {
+    if (needsToggle) {
+      try {
+        await sock.updateReadReceiptsPrivacy('none');
+      } catch (err) {
+        logger.warn({ err }, 'Failed to restore read receipts privacy after status action');
+      }
+    }
+  }
+}
+
 async function reactToStatus(sock, msg) {
   // WhatsApp's status viewer sheet only ever renders the native heart badge
   // for a status reaction, no matter what emoji is actually sent underneath.
@@ -218,14 +250,18 @@ function registerStatusHandler(sock, botId) {
         enqueueView(botId, async () => {
           await randomDelay(VIEW_DELAY_MIN_MS, VIEW_DELAY_MAX_MS);
           try {
-            await sock.readMessages([msg.key]);
+            await withStatusVisibility(sock, features.stealth_read_mode, () =>
+              sock.readMessages([msg.key])
+            );
           } catch (err) {
             logger.warn({ err, botId }, 'Failed to mark status as viewed');
           }
 
           if (features.auto_react_status) {
             enqueueReaction(botId, async () => {
-              const emoji = await reactToStatus(sock, msg);
+              const emoji = await withStatusVisibility(sock, features.stealth_read_mode, () =>
+                reactToStatus(sock, msg)
+              );
               logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
             });
           }
@@ -233,7 +269,9 @@ function registerStatusHandler(sock, botId) {
       } else if (features.auto_react_status) {
         // Viewing is off but reacting is on — still react on its own.
         enqueueReaction(botId, async () => {
-          const emoji = await reactToStatus(sock, msg);
+          const emoji = await withStatusVisibility(sock, features.stealth_read_mode, () =>
+            reactToStatus(sock, msg)
+          );
           logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
         });
       }

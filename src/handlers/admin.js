@@ -442,11 +442,19 @@ function createAdminRoutes() {
     const mode = req.body.mode;
     if (STEALTH_READ_MODES.includes(mode)) {
       await setStealthReadMode(botId, mode);
-      // NOTE: We do NOT touch sock.updateReadReceiptsPrivacy() here. That's
-      // the account-wide WhatsApp privacy setting that also controls status
-      // view visibility (see botManager.js) — it's intentionally always
-      // kept 'all' regardless of this mode, since Stealth/No-Mark is only
-      // meant to affect per-message read receipts, not status views.
+      // Apply the new resting state immediately rather than waiting for the
+      // next reconnect. 'normal' rests at 'all' (receipts + status views
+      // both on). 'stealth'/'no_mark' rest at 'none' (blue tick guaranteed
+      // off) — status views still work via the brief per-action toggle in
+      // statusHandler.js.
+      try {
+        const live = getBotState(botId);
+        if (live && live.sock && live.status === 'connected') {
+          await live.sock.updateReadReceiptsPrivacy(mode === 'normal' ? 'all' : 'none');
+        }
+      } catch (err) {
+        // Non-fatal — will still apply on next reconnect via botManager.js
+      }
     }
     res.redirect(`/admin/bot/${botId}`);
   });
