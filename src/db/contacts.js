@@ -49,8 +49,25 @@ async function getAllContactJids(botId) {
   return res.rows.map((r) => r.jid);
 }
 
+async function manuallyAddContact(botId, phoneNumber, displayName) {
+  // Normalize to a bare digit string, then build the JID the same way
+  // real incoming messages would key it (E.164-ish digits + @s.whatsapp.net).
+  const digits = String(phoneNumber).replace(/[^0-9]/g, '');
+  const jid = `${digits}@s.whatsapp.net`;
+  const res = await query(
+    `INSERT INTO contacts (bot_id, jid, phone_number, display_name, last_seen_at, message_count)
+     VALUES ($1, $2, $3, $4, NOW(), 0)
+     ON CONFLICT (bot_id, jid) DO UPDATE SET
+       display_name = COALESCE(EXCLUDED.display_name, contacts.display_name)
+     RETURNING *`,
+    [botId, jid, digits, displayName || null]
+  );
+  return res.rows[0];
+}
+
 module.exports = {
   upsertContact,
+  manuallyAddContact,
   getContact,
   getContactsForBot,
   setBlocked,

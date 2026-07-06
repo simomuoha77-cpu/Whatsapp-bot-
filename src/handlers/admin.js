@@ -17,7 +17,7 @@ const {
   setAiSystemPrompt,
   setStealthReadMode,
 } = require('../db/botFeatures');
-const { getContactsForBot } = require('../db/contacts');
+const { getContactsForBot, manuallyAddContact } = require('../db/contacts');
 const { getThreadForContact } = require('../db/messages');
 const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
 const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
@@ -206,6 +206,15 @@ function createAdminRoutes() {
       </div>
     `).join('') || '<p>No contacts yet.</p>';
 
+    const addContactForm = `
+      <form method="POST" action="/admin/bot/${botId}/contacts/add" style="display:flex;gap:8px;margin-bottom:12px;">
+        <input name="phone" placeholder="Phone number, e.g. 254712345678" required style="flex:2;" />
+        <input name="name" placeholder="Name (optional)" style="flex:1;" />
+        <button type="submit" style="width:auto;">Add</button>
+      </form>
+      <p><small>Creates a CRM entry only — the bot can then message this number, and any future messages either way show up in the chat viewer. It does NOT give access to any existing chats on that number.</small></p>
+    `;
+
     const viewOnceRows = viewOnceCaptures.map((v) => `
       <div class="row">
         <span>
@@ -358,6 +367,7 @@ function createAdminRoutes() {
 
       <div class="card">
         <h3>Recent contacts</h3>
+        ${addContactForm}
         ${contactRows}
       </div>
 
@@ -462,6 +472,16 @@ function createAdminRoutes() {
       </div>
     `;
     res.send(layout(`Chat — ${jid.split('@')[0]}`, html));
+  });
+
+  router.post('/bot/:id/contacts/add', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const phone = (req.body.phone || '').trim();
+    const name = (req.body.name || '').trim();
+    if (phone) {
+      await manuallyAddContact(botId, phone, name || null);
+    }
+    res.redirect(`/admin/bot/${botId}`);
   });
 
   router.post('/bot/:id/toggle', async (req, res) => {
