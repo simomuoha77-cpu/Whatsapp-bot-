@@ -224,7 +224,7 @@ async function startAllBots(onReady) {
   // out, retry, and pile up again. Staggering startup by a few hundred ms
   // per bot spreads the load out so each connection actually has a chance
   // to establish before the next one starts.
-  const STAGGER_MS = parseInt(process.env.BOT_STARTUP_STAGGER_MS || '400', 10);
+  const STAGGER_MS = parseInt(process.env.BOT_STARTUP_STAGGER_MS || '3500', 10);
   result.rows.forEach((bot, index) => {
     setTimeout(() => {
       startBotSocket(bot.id, bot.slug, onReady).catch((err) =>

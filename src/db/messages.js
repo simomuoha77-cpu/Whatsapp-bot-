@@ -8,4 +8,12 @@ async function logMessage({ botId, jid, messageId, direction, messageType, body,
   );
 }
 
-module.exports = { logMessage };
+async function getThreadForContact(botId, jid, limit = 200) {
+  const res = await query(
+    `SELECT * FROM messages WHERE bot_id = $1 AND jid = $2 ORDER BY created_at ASC LIMIT $3`,
+    [botId, jid, limit]
+  );
+  return res.rows;
+}
+
+module.exports = { logMessage, getThreadForContact };

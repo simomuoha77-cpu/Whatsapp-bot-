@@ -18,6 +18,7 @@ const {
   setStealthReadMode,
 } = require('../db/botFeatures');
 const { getContactsForBot } = require('../db/contacts');
+const { getThreadForContact } = require('../db/messages');
 const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
 const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
@@ -199,7 +200,10 @@ function createAdminRoutes() {
     `).join('');
 
     const contactRows = contacts.map((c) => `
-      <div class="row"><span>${c.display_name || c.phone_number}</span><small>${c.message_count} msgs</small></div>
+      <div class="row">
+        <a href="/admin/bot/${botId}/chat/${encodeURIComponent(c.jid)}" style="color:inherit;text-decoration:underline;">${c.display_name || c.phone_number}</a>
+        <small>${c.message_count} msgs</small>
+      </div>
     `).join('') || '<p>No contacts yet.</p>';
 
     const viewOnceRows = viewOnceCaptures.map((v) => `
@@ -425,6 +429,39 @@ function createAdminRoutes() {
         </form>
       </div>
     `));
+  });
+
+  // Admin-only chat viewer — lets the platform admin see a contact's full
+  // message thread with a given bot, for support/moderation. Intentionally
+  // NOT exposed on the client dashboard (client.js) — a bot owner already
+  // sees their own chats in their own WhatsApp; this is only for the
+  // platform admin to look in when helping a client.
+  router.get('/bot/:id/chat/:jid', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const jid = req.params.jid;
+    const bot = await getBotById(botId);
+    if (!bot) return res.status(404).send(layout('Not found', '<h2>Client not found.</h2>'));
+
+    const thread = await getThreadForContact(botId, jid, 200);
+
+    const messageRows = thread.map((m) => `
+      <div class="row" style="justify-content:${m.direction === 'outgoing' ? 'flex-end' : 'flex-start'};border-bottom:none;">
+        <div style="max-width:80%;background:${m.direction === 'outgoing' ? '#1e3a5f' : '#2a2a2a'};padding:8px 12px;border-radius:10px;">
+          <div>${m.body ? String(m.body).replace(/</g, '&lt;') : `[${m.message_type}]`}</div>
+          <small style="opacity:0.6;">${new Date(m.created_at).toLocaleString()}</small>
+        </div>
+      </div>
+    `).join('') || '<p>No messages in this thread yet.</p>';
+
+    const html = `
+      ${nav()}
+      <a href="/admin/bot/${botId}">&larr; Back to ${bot.slug}</a>
+      <div class="card" style="margin-top:12px;">
+        <h2>Chat with ${jid.split('@')[0]}</h2>
+        <div style="display:flex;flex-direction:column;gap:8px;">${messageRows}</div>
+      </div>
+    `;
+    res.send(layout(`Chat — ${jid.split('@')[0]}`, html));
   });
 
   router.post('/bot/:id/toggle', async (req, res) => {
