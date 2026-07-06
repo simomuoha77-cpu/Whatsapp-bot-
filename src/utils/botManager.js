@@ -3,6 +3,7 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  Browsers,
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
@@ -60,6 +61,10 @@ async function startBotSocket(botId, slug, onReady) {
     generateHighQualityLinkPreview: true,
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    // Baileys' unlabeled default linked-device name is itself a signal —
+    // every real WhatsApp Web/Desktop session identifies as a real browser.
+    // This just matches that instead of leaving it blank/generic.
+    browser: Browsers.macOS('Safari'),
   });
 
   const entry = {

@@ -28,6 +28,9 @@ function replyDelay() {
   const ms = Math.floor(Math.random() * (REPLY_DELAY_MAX_MS - REPLY_DELAY_MIN_MS + 1)) + REPLY_DELAY_MIN_MS;
   return new Promise((res) => setTimeout(res, ms));
 }
+function delay(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
 const lastAutoReplyAt = new Map(); // `${botId}:${jid}` -> timestamp
 
 function extractText(msg) {
@@ -220,6 +223,22 @@ function registerMessageHandler(sock, botId) {
 
         const reply = async (content) => {
           const payload = typeof content === 'string' ? { text: content } : content;
+          // Real phones show "typing..." for a moment before a message
+          // appears — sending instantly with no composing state at all is
+          // itself a signal that this isn't a person. Scale the typing time
+          // roughly to message length so short and long replies don't look
+          // identical, then briefly show "paused" (like someone finishing
+          // typing and about to hit send) right before the message posts.
+          try {
+            await sock.sendPresenceUpdate('composing', sender);
+            const textLen = typeof content === 'string' ? content.length : 40;
+            const typingMs = Math.min(4000, Math.max(600, textLen * 35));
+            await delay(typingMs);
+            await sock.sendPresenceUpdate('paused', sender);
+          } catch (err) {
+            // Non-fatal — worst case the reply just sends without the
+            // typing indicator this one time.
+          }
           await sock.sendMessage(sender, payload);
           await logMessage({
             botId,
