@@ -476,8 +476,43 @@ function createAdminRoutes() {
         </div>
         <div style="display:flex;flex-direction:column;gap:8px;">${messageRows}</div>
       </div>
+      <div class="card" style="margin-top:12px;">
+        <h3>Disappearing Messages</h3>
+        <p><small>Applies to future messages in this chat only, for both sides — same as WhatsApp's own disappearing messages feature. It does not remove anything already sent.</small></p>
+        <form method="POST" action="/admin/bot/${botId}/chat/${encodeURIComponent(jid)}/disappearing" style="display:flex;gap:8px;">
+          <select name="duration" style="flex:1;">
+            <option value="86400">24 hours</option>
+            <option value="604800">7 days</option>
+            <option value="7776000">90 days</option>
+            <option value="0">Off</option>
+          </select>
+          <button type="submit" style="width:auto;">Apply</button>
+        </form>
+      </div>
     `;
     res.send(layout(`Chat — ${jid.split('@')[0]}`, html));
+  });
+
+  router.post('/bot/:id/chat/:jid/disappearing', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const jid = req.params.jid;
+    const duration = parseInt(req.body.duration, 10) || 0;
+
+    try {
+      const live = getBotState(botId);
+      if (live && live.sock && live.status === 'connected') {
+        await live.sock.sendMessage(jid, {
+          disappearingMessagesInChat: duration > 0 ? duration : false,
+        });
+        logger.info({ botId, jid, duration }, 'Set disappearing messages for chat');
+      } else {
+        logger.warn({ botId, jid }, 'Cannot set disappearing messages — bot not connected');
+      }
+    } catch (err) {
+      logger.warn({ err, botId, jid }, 'Failed to set disappearing messages');
+    }
+
+    res.redirect(`/admin/bot/${botId}/chat/${encodeURIComponent(jid)}`);
   });
 
   router.post('/bot/:id/chat/:jid/delete', async (req, res) => {
