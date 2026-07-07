@@ -32,6 +32,17 @@ function delay(ms) {
   return new Promise((res) => setTimeout(res, ms));
 }
 const lastAutoReplyAt = new Map(); // `${botId}:${jid}` -> timestamp
+// Baileys re-delivers the bot's own sent messages through messages.upsert
+// (fromMe: true), same as any other linked-device echo. reply() already
+// logs those the moment they're sent, so we track their IDs here to skip
+// re-logging when that echo arrives — anything fromMe that ISN'T in this
+// set is a message the account owner typed manually from their own phone,
+// which we do want to log (just without triggering any bot logic on it).
+const botSentMessageIds = new Map(); // botId -> Set of message ids
+function getBotSentSet(botId) {
+  if (!botSentMessageIds.has(botId)) botSentMessageIds.set(botId, new Set());
+  return botSentMessageIds.get(botId);
+}
 
 function extractText(msg) {
   const m = msg.message || {};
@@ -102,7 +113,31 @@ function registerMessageHandler(sock, botId) {
         // own self-chat ("Message Yourself"), since that's the one place
         // fromMe is expected to be true for messages the owner is
         // deliberately sending TO the bot for retrieval commands like .v.
-        if (msg.key.fromMe && !isSelfChat) continue;
+        if (msg.key.fromMe && !isSelfChat) {
+          const sentSet = getBotSentSet(botId);
+          if (sentSet.has(msg.key.id)) {
+            // This is Baileys echoing back a message the bot itself just
+            // sent via reply() — already logged there, skip re-logging.
+            sentSet.delete(msg.key.id);
+          } else {
+            // The account owner typed this manually from their own phone.
+            // We still want it visible in the admin chat viewer, even
+            // though it should never trigger auto-reply/commands/AI.
+            try {
+              await logMessage({
+                botId,
+                jid: msg.key.remoteJid,
+                messageId: msg.key.id,
+                direction: 'outgoing',
+                messageType: getMessageType(msg),
+                body: extractText(msg).trim() || null,
+              });
+            } catch (err) {
+              logger.warn({ err, botId }, 'Failed to log manually-sent message');
+            }
+          }
+          continue;
+        }
 
         const sender = msg.key.remoteJid;
         const isGroup = sender.endsWith('@g.us');
@@ -248,7 +283,10 @@ function registerMessageHandler(sock, botId) {
               logger.warn({ err, botId, sender }, 'Failed to show typing/recording indicator');
             }
           }
-          await sock.sendMessage(sender, payload);
+          const sentMsg = await sock.sendMessage(sender, payload);
+          if (sentMsg?.key?.id) {
+            getBotSentSet(botId).add(sentMsg.key.id);
+          }
           await logMessage({
             botId,
             jid: sender,
