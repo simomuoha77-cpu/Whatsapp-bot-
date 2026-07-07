@@ -17,6 +17,14 @@ const FEATURE_COLUMNS = [
   'ai_chat_enabled',
   'presence_tracking_enabled',
   'ai_only_silent_mode',
+  'anti_call_enabled',
+  'auto_bio_enabled',
+  'always_online_enabled',
+  'fake_typing_enabled',
+  'fake_recording_enabled',
+  'auto_react_messages_enabled',
+  'auto_save_contacts_enabled',
+  'media_download_enabled',
 ];
 
 const FEATURE_LABELS = {
@@ -36,6 +44,14 @@ const FEATURE_LABELS = {
   ai_chat_enabled: 'AI Chat Assistant',
   presence_tracking_enabled: 'Online/Offline + Last Seen Tracking',
   ai_only_silent_mode: 'AI-Only Silent Mode (auto-archive & mute every AI conversation)',
+  anti_call_enabled: 'Anti-Call (auto-reject voice/video calls)',
+  auto_bio_enabled: 'Auto Bio (rotate About text automatically)',
+  always_online_enabled: 'Always Online',
+  fake_typing_enabled: 'Fake Typing (show "typing..." before replies)',
+  fake_recording_enabled: 'Fake Recording (show "recording audio..." before replies)',
+  auto_react_messages_enabled: 'Auto React to Messages',
+  auto_save_contacts_enabled: 'Auto Save Contacts',
+  media_download_enabled: 'Media Download (.song / .video commands)',
 };
 
 const STEALTH_READ_MODES = ['normal', 'stealth', 'no_mark'];

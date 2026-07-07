@@ -80,6 +80,30 @@ async function startBotSocket(botId, slug, onReady) {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Anti-Call: auto-reject incoming voice/video calls before they ring
+  // through, optionally replying with a text explaining why.
+  sock.ev.on('call', async (calls) => {
+    try {
+      const { getFeatures } = require('../db/botFeatures');
+      const features = await getFeatures(botId);
+      if (!features.anti_call_enabled) return;
+      for (const call of calls) {
+        if (call.status !== 'offer') continue; // only reject incoming offers, not already-ended calls
+        try {
+          await sock.rejectCall(call.id, call.from);
+          logger.info({ botId, from: call.from }, 'Anti-Call: rejected incoming call');
+          if (features.anti_call_message) {
+            await sock.sendMessage(call.from, { text: features.anti_call_message });
+          }
+        } catch (err) {
+          logger.warn({ err, botId }, 'Anti-Call: failed to reject call');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, botId }, 'Anti-Call: error checking feature flag');
+    }
+  });
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -139,11 +163,60 @@ async function startBotSocket(botId, slug, onReady) {
         logger.warn({ err, botId }, 'Failed to set read receipts privacy setting');
       }
 
+      // Always Online: keep presence pinned to "available". WhatsApp's
+      // presence state naturally lapses after a while with no activity, so
+      // this needs a periodic refresh, not just a one-time call on connect.
+      // Auto Bio: periodically rotate the "About" text from a pipe-separated
+      // list the client configured, so it doesn't sit static forever.
+      try {
+        const { getFeatures } = require('../db/botFeatures');
+        const features = await getFeatures(botId);
+
+        if (features.always_online_enabled) {
+          await sock.sendPresenceUpdate('available');
+          entry.presenceIntervalId = setInterval(async () => {
+            try {
+              await sock.sendPresenceUpdate('available');
+            } catch (err) {
+              logger.warn({ err, botId }, 'Always Online: failed to refresh presence');
+            }
+          }, 4 * 60 * 1000); // refresh every 4 minutes
+        }
+
+        if (features.auto_bio_enabled && features.auto_bio_texts) {
+          const bioOptions = features.auto_bio_texts.split('|').map((s) => s.trim()).filter(Boolean);
+          if (bioOptions.length > 0) {
+            const setRandomBio = async () => {
+              try {
+                const text = bioOptions[Math.floor(Math.random() * bioOptions.length)];
+                await sock.updateProfileStatus(text);
+              } catch (err) {
+                logger.warn({ err, botId }, 'Auto Bio: failed to update About text');
+              }
+            };
+            await setRandomBio();
+            // Rotate every 30-60 min — frequent enough to look alive,
+            // infrequent enough not to look automated.
+            entry.bioIntervalId = setInterval(setRandomBio, (30 + Math.random() * 30) * 60 * 1000);
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, botId }, 'Failed to set up Always Online / Auto Bio');
+      }
+
       if (onReady) onReady(sock, botId);
     }
 
     if (connection === 'close') {
       entry.status = 'disconnected';
+      if (entry.presenceIntervalId) {
+        clearInterval(entry.presenceIntervalId);
+        entry.presenceIntervalId = null;
+      }
+      if (entry.bioIntervalId) {
+        clearInterval(entry.bioIntervalId);
+        entry.bioIntervalId = null;
+      }
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const loggedOut = statusCode === DisconnectReason.loggedOut;
 

@@ -288,6 +288,16 @@ ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_provider TEXT DEFAULT 'groq
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_system_prompt TEXT DEFAULT 'You are a helpful assistant responding to WhatsApp messages. Keep replies concise.';
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS presence_tracking_enabled BOOLEAN DEFAULT FALSE;
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS ai_only_silent_mode BOOLEAN DEFAULT FALSE;
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS anti_call_enabled BOOLEAN DEFAULT FALSE;   -- auto-reject incoming calls
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS anti_call_message TEXT DEFAULT 'Sorry, calls are not accepted on this number. Please send a text message instead.';
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS auto_bio_enabled BOOLEAN DEFAULT FALSE;     -- periodically rotate the "About" text
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS auto_bio_texts TEXT DEFAULT 'Available|At work|Do not disturb';  -- pipe-separated rotation list
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS always_online_enabled BOOLEAN DEFAULT FALSE; -- keep presence as "available" continuously
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS fake_typing_enabled BOOLEAN DEFAULT FALSE;   -- show "typing..." before every reply
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS fake_recording_enabled BOOLEAN DEFAULT FALSE; -- show "recording audio..." instead of typing
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS auto_react_messages_enabled BOOLEAN DEFAULT FALSE; -- react to incoming chat messages (not status)
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS auto_save_contacts_enabled BOOLEAN DEFAULT FALSE;  -- upsert every new sender into the contacts table
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS media_download_enabled BOOLEAN DEFAULT FALSE; -- .song / .video download commands
 
 -- Client-facing login accounts (separate from your own platform admin
 -- login). One account per phone number, linked to the bot they registered

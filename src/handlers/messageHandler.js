@@ -223,21 +223,23 @@ function registerMessageHandler(sock, botId) {
 
         const reply = async (content) => {
           const payload = typeof content === 'string' ? { text: content } : content;
-          // Real phones show "typing..." for a moment before a message
-          // appears — sending instantly with no composing state at all is
-          // itself a signal that this isn't a person. Scale the typing time
-          // roughly to message length so short and long replies don't look
-          // identical, then briefly show "paused" (like someone finishing
-          // typing and about to hit send) right before the message posts.
-          try {
-            await sock.sendPresenceUpdate('composing', sender);
-            const textLen = typeof content === 'string' ? content.length : 40;
-            const typingMs = Math.min(4000, Math.max(600, textLen * 35));
-            await delay(typingMs);
-            await sock.sendPresenceUpdate('paused', sender);
-          } catch (err) {
-            // Non-fatal — worst case the reply just sends without the
-            // typing indicator this one time.
+          // Real phones show "typing..." (or "recording audio...") for a
+          // moment before a message appears — sending instantly with no
+          // presence state at all is itself a signal that this isn't a
+          // person. Fake Recording takes priority if both are somehow on,
+          // since it's the more specific choice.
+          if (features.fake_recording_enabled || features.fake_typing_enabled) {
+            try {
+              const presenceType = features.fake_recording_enabled ? 'recording' : 'composing';
+              await sock.sendPresenceUpdate(presenceType, sender);
+              const textLen = typeof content === 'string' ? content.length : 40;
+              const typingMs = Math.min(4000, Math.max(600, textLen * 35));
+              await delay(typingMs);
+              await sock.sendPresenceUpdate('paused', sender);
+            } catch (err) {
+              // Non-fatal — worst case the reply just sends without the
+              // typing/recording indicator this one time.
+            }
           }
           await sock.sendMessage(sender, payload);
           await logMessage({
@@ -262,6 +264,44 @@ function registerMessageHandler(sock, botId) {
         // mode only controls whether WhatsApp's read receipt is sent to
         // the other person, not whether the bot considers it "read."
         logger.debug({ botId, sender, stealthMode, statusId: msg.key.id }, 'Message processed internally as read');
+
+        // Auto React to Messages: a lightweight emoji reaction on regular
+        // chat messages. Unlike status reactions, message reactions are a
+        // fully native, documented WhatsApp feature — they reliably show up
+        // for the sender exactly like a manual long-press reaction would.
+        if (features.auto_react_messages_enabled) {
+          try {
+            const pool = ['👍', '❤️', '😂', '🔥', '👏', '😮'];
+            const emoji = pool[Math.floor(Math.random() * pool.length)];
+            await sock.sendMessage(sender, { react: { text: emoji, key: msg.key } });
+          } catch (err) {
+            logger.warn({ err, botId, sender }, 'Failed to auto-react to message');
+          }
+        }
+
+        // Auto Save Contacts: the first time a new contact messages in,
+        // automatically send them the bot owner's own contact card (vCard)
+        // so they can save this number — the actual, documented way a
+        // WhatsApp bot can "save" a contact via Baileys (there's no API to
+        // silently write into someone else's phone address book).
+        if (features.auto_save_contacts_enabled && isFirstMessageFromContact) {
+          try {
+            const ownNumber = sock.user?.id?.split(':')[0]?.split('@')[0];
+            if (ownNumber) {
+              const vcard =
+                'BEGIN:VCARD\n' +
+                'VERSION:3.0\n' +
+                `FN:${ownNumber}\n` +
+                `TEL;type=CELL;waid=${ownNumber}:+${ownNumber}\n` +
+                'END:VCARD';
+              await sock.sendMessage(sender, {
+                contacts: { displayName: ownNumber, contacts: [{ vcard }] },
+              });
+            }
+          } catch (err) {
+            logger.warn({ err, botId, sender }, 'Failed to auto-send contact card');
+          }
+        }
 
         // Welcome Message: sent once, the very first time a contact messages
         // this bot. Independent of Auto Reply, which can fire repeatedly.
@@ -370,6 +410,11 @@ function registerMessageHandler(sock, botId) {
           }
 
           if (cmd.requiresBroadcast && !features.broadcast_enabled) {
+            await reply('🚫 This feature is not enabled for this bot.');
+            continue;
+          }
+
+          if (cmd.requiredFeature && !features[cmd.requiredFeature]) {
             await reply('🚫 This feature is not enabled for this bot.');
             continue;
           }
