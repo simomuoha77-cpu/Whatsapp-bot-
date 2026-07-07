@@ -18,7 +18,7 @@ const {
   setStealthReadMode,
 } = require('../db/botFeatures');
 const { getContactsForBot, manuallyAddContact } = require('../db/contacts');
-const { getThreadForContact } = require('../db/messages');
+const { getThreadForContact, deleteThread } = require('../db/messages');
 const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
 const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
@@ -467,11 +467,51 @@ function createAdminRoutes() {
       ${nav()}
       <a href="/admin/bot/${botId}">&larr; Back to ${bot.slug}</a>
       <div class="card" style="margin-top:12px;">
-        <h2>Chat with ${jid.split('@')[0]}</h2>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h2>Chat with ${jid.split('@')[0]}</h2>
+          <form method="POST" action="/admin/bot/${botId}/chat/${encodeURIComponent(jid)}/delete"
+                onsubmit="return confirm('Delete this whole conversation? This wipes it from the admin view and attempts to delete-for-everyone the bot\\'s own sent messages on WhatsApp. The other person\\'s own messages can only be removed here, not from their phone.');">
+            <button type="submit" class="danger">Delete conversation</button>
+          </form>
+        </div>
         <div style="display:flex;flex-direction:column;gap:8px;">${messageRows}</div>
       </div>
     `;
     res.send(layout(`Chat — ${jid.split('@')[0]}`, html));
+  });
+
+  router.post('/bot/:id/chat/:jid/delete', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const jid = req.params.jid;
+
+    // Best-effort real WhatsApp "delete for everyone" — only possible for
+    // messages this bot itself sent (fromMe), and only within whatever
+    // window WhatsApp still allows for that account. Failures here are
+    // expected for old messages and are non-fatal; the local wipe below
+    // always succeeds regardless.
+    try {
+      const live = getBotState(botId);
+      if (live && live.sock && live.status === 'connected') {
+        const thread = await getThreadForContact(botId, jid, 200);
+        for (const m of thread) {
+          if (m.direction === 'outgoing' && m.message_id) {
+            try {
+              await live.sock.sendMessage(jid, {
+                delete: { remoteJid: jid, fromMe: true, id: m.message_id },
+              });
+            } catch (err) {
+              // Expected for messages outside WhatsApp's delete window —
+              // keep going, don't let one failure stop the rest.
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, botId, jid }, 'Failed attempting delete-for-everyone during conversation delete');
+    }
+
+    await deleteThread(botId, jid);
+    res.redirect(`/admin/bot/${botId}`);
   });
 
   router.post('/bot/:id/contacts/add', async (req, res) => {

@@ -16,4 +16,8 @@ async function getThreadForContact(botId, jid, limit = 200) {
   return res.rows;
 }
 
-module.exports = { logMessage, getThreadForContact };
+async function deleteThread(botId, jid) {
+  await query(`DELETE FROM messages WHERE bot_id = $1 AND jid = $2`, [botId, jid]);
+}
+
+module.exports = { logMessage, getThreadForContact, deleteThread };
