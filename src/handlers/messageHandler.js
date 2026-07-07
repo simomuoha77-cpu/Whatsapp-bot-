@@ -230,6 +230,14 @@ function registerMessageHandler(sock, botId) {
           // since it's the more specific choice.
           if (features.fake_recording_enabled || features.fake_typing_enabled) {
             try {
+              // Baileys' sendPresenceUpdate('composing'/'recording', jid)
+              // is frequently a silent no-op unless we've first subscribed
+              // to presence for that chat — this is a well-documented
+              // Baileys quirk, not something obvious from the API surface.
+              // presenceSubscribe() only needs to happen once per chat, but
+              // calling it again here is harmless and guarantees it's in
+              // place before every single typing/recording indicator.
+              await sock.presenceSubscribe(sender);
               const presenceType = features.fake_recording_enabled ? 'recording' : 'composing';
               await sock.sendPresenceUpdate(presenceType, sender);
               const textLen = typeof content === 'string' ? content.length : 40;
@@ -237,8 +245,7 @@ function registerMessageHandler(sock, botId) {
               await delay(typingMs);
               await sock.sendPresenceUpdate('paused', sender);
             } catch (err) {
-              // Non-fatal — worst case the reply just sends without the
-              // typing/recording indicator this one time.
+              logger.warn({ err, botId, sender }, 'Failed to show typing/recording indicator');
             }
           }
           await sock.sendMessage(sender, payload);
