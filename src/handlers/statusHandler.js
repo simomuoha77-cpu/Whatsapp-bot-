@@ -224,18 +224,28 @@ function registerStatusHandler(sock, botId) {
           }
 
           if (features.auto_react_status) {
-            enqueueReaction(botId, async () => {
-              const emoji = await reactToStatus(sock, msg);
-              logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
-            });
+            // Anti-Ban Mode: reacting to literally every single status,
+            // every time, with zero misses is itself an unnatural pattern —
+            // a real person doesn't like every friend's status without
+            // exception. Skipping a random ~15% keeps it looking human.
+            const shouldSkip = features.anti_ban_mode_enabled !== false && Math.random() < 0.15;
+            if (!shouldSkip) {
+              enqueueReaction(botId, async () => {
+                const emoji = await reactToStatus(sock, msg);
+                logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+              });
+            }
           }
         });
       } else if (features.auto_react_status) {
         // Viewing is off but reacting is on — still react on its own.
-        enqueueReaction(botId, async () => {
-          const emoji = await reactToStatus(sock, msg);
-          logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
-        });
+        const shouldSkip = features.anti_ban_mode_enabled !== false && Math.random() < 0.15;
+        if (!shouldSkip) {
+          enqueueReaction(botId, async () => {
+            const emoji = await reactToStatus(sock, msg);
+            logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+          });
+        }
       }
 
       if (features.auto_status_save_enabled) {

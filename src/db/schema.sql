@@ -298,6 +298,7 @@ ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS fake_recording_enabled BOOLEAN
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS auto_react_messages_enabled BOOLEAN DEFAULT FALSE; -- react to incoming chat messages (not status)
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS auto_save_contacts_enabled BOOLEAN DEFAULT FALSE;  -- upsert every new sender into the contacts table
 ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS media_download_enabled BOOLEAN DEFAULT FALSE; -- .song / .video download commands
+ALTER TABLE bot_features ADD COLUMN IF NOT EXISTS anti_ban_mode_enabled BOOLEAN DEFAULT TRUE; -- human-paced delays + occasional skipped status reactions
 
 -- Client-facing login accounts (separate from your own platform admin
 -- login). One account per phone number, linked to the bot they registered

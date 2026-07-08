@@ -25,6 +25,7 @@ const FEATURE_COLUMNS = [
   'auto_react_messages_enabled',
   'auto_save_contacts_enabled',
   'media_download_enabled',
+  'anti_ban_mode_enabled',
 ];
 
 const FEATURE_LABELS = {
@@ -52,6 +53,7 @@ const FEATURE_LABELS = {
   auto_react_messages_enabled: 'Auto React to Messages',
   auto_save_contacts_enabled: 'Auto Save Contacts',
   media_download_enabled: 'Media Download (.song / .video commands)',
+  anti_ban_mode_enabled: 'Anti-Ban Mode (human-paced delays, occasional skipped status reactions — reduces risk, does not guarantee against bans)',
 };
 
 const STEALTH_READ_MODES = ['normal', 'stealth', 'no_mark'];
