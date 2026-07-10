@@ -92,10 +92,11 @@ async function handlePotentialViewOnce(sock, botId, msg) {
     }
   }
 
+  let buffer;
   let mediaPath = null;
   try {
     // Download before WhatsApp expires/removes the underlying media.
-    const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger });
+    buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger });
     const ext = mediaType === 'video' ? 'mp4' : 'jpg';
     const filename = `${Date.now()}_${sanitizeFilenamePart(senderNumber)}.${ext}`;
     mediaPath = path.join(MEDIA_ROOT, filename);
@@ -120,6 +121,25 @@ async function handlePotentialViewOnce(sock, botId, msg) {
     });
   } catch (err) {
     logger.error({ err, botId }, 'Failed to log view-once capture to database');
+  }
+
+  // Auto-forward straight into the bot owner's self-chat ("Message
+  // Yourself") the moment it's captured — no need to type .v at all. Goes
+  // to self-chat rather than back into the original chat so the sender
+  // never sees their "disappearing" media reappear there.
+  try {
+    const ownJid = sock.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null;
+    if (ownJid) {
+      const label = groupName ? `${senderName || senderNumber} in ${groupName}` : senderName || senderNumber;
+      const forwardCaption = `📸 View-once saved from ${label}${caption ? `\n\n${caption}` : ''}`;
+      const payload =
+        mediaType === 'video'
+          ? { video: buffer, caption: forwardCaption }
+          : { image: buffer, caption: forwardCaption };
+      await sock.sendMessage(ownJid, payload);
+    }
+  } catch (err) {
+    logger.warn({ err, botId }, 'Failed to auto-forward captured view-once media to self-chat');
   }
 
   logger.info(
