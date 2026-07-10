@@ -20,13 +20,21 @@ if (!fs.existsSync(MEDIA_ROOT)) fs.mkdirSync(MEDIA_ROOT, { recursive: true });
 function extractViewOnceMedia(message) {
   if (!message) return null;
 
+  // If this chat has disappearing messages on (common, sometimes default
+  // for new chats), WhatsApp wraps EVERY incoming message — including
+  // view-once photos — in an extra ephemeralMessage layer first. Without
+  // unwrapping that, the viewOnceMessage wrapper underneath is invisible
+  // to the checks below and the capture silently misses it every time.
+  const unwrapped = message.ephemeralMessage ? message.ephemeralMessage.message : message;
+  if (!unwrapped) return null;
+
   // Wrapped forms: viewOnceMessage / viewOnceMessageV2 / viewOnceMessageV2Extension
   const wrapper =
-    message.viewOnceMessage ||
-    message.viewOnceMessageV2 ||
-    message.viewOnceMessageV2Extension;
+    unwrapped.viewOnceMessage ||
+    unwrapped.viewOnceMessageV2 ||
+    unwrapped.viewOnceMessageV2Extension;
 
-  const inner = wrapper ? wrapper.message : message;
+  const inner = wrapper ? wrapper.message : unwrapped;
   if (!inner) return null;
 
   if (inner.imageMessage && (wrapper || inner.imageMessage.viewOnce)) {
