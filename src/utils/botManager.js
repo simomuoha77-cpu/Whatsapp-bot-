@@ -345,6 +345,21 @@ async function requestPairingCodeForBot(botId, slug, phoneNumber) {
 
   if (!entry || !entry.sock) return false;
 
+  // startBotSocket() returns as soon as the socket OBJECT exists, not once
+  // its underlying WebSocket has actually finished connecting — calling
+  // requestPairingCode before that handshake completes is exactly what
+  // produced "Connection Closed" / statusCode 428. Poll briefly for the
+  // transport to actually be open before trying.
+  const waitForOpen = async (sock, timeoutMs = 8000) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (sock.ws?.readyState === 1) return true; // 1 = OPEN
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return sock.ws?.readyState === 1;
+  };
+  await waitForOpen(entry.sock);
+
   entry.pendingPairingNumber = phoneNumber;
   if (!entry.sock.authState?.creds?.registered) {
     try {
