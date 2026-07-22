@@ -161,7 +161,9 @@ function createAdminRoutes() {
 
   router.post('/bots', async (req, res) => {
     const bot = await createBot(req.body.clientName);
-    await startBotSocket(bot.id, bot.slug, require('./botStartHook').onBotReady).catch(() => {});
+    await startBotSocket(bot.id, bot.slug, require('./botStartHook').onBotReady).catch((err) =>
+      logger.error({ err, botId: bot.id }, 'Failed to start bot socket on admin bot creation')
+    );
     res.redirect(`/admin/bot/${bot.id}`);
   });
 
