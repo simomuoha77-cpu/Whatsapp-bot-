@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_messages_bot_jid ON messages(bot_id, jid);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_unique_msgid ON messages(bot_id, message_id) WHERE message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sessions_state (
   id SERIAL PRIMARY KEY,

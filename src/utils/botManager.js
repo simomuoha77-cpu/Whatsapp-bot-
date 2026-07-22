@@ -59,7 +59,12 @@ async function startBotSocket(botId, slug, onReady) {
     },
     msgRetryCounterCache: new NodeCache(),
     generateHighQualityLinkPreview: true,
-    syncFullHistory: false,
+    // WhatsApp only sends this history payload once, right when a device
+    // is freshly linked (or relinked) — it will NOT retroactively backfill
+    // an already-connected session. Turning this on means any bot that
+    // gets linked/relinked from now on will populate real chat history
+    // into our own messages table via the messaging-history.set handler.
+    syncFullHistory: true,
     markOnlineOnConnect: false,
     // Baileys' unlabeled default linked-device name is itself a signal —
     // every real WhatsApp Web/Desktop session identifies as a real browser.
@@ -82,6 +87,55 @@ async function startBotSocket(botId, slug, onReady) {
 
   // Anti-Call: auto-reject incoming voice/video calls before they ring
   // through, optionally replying with a text explaining why.
+  // Real chat history — WhatsApp only sends this once, right when a device
+  // is freshly linked/relinked (syncFullHistory: true above is what asks
+  // for it). It arrives as one or more batches, each potentially containing
+  // thousands of old messages across every chat, so we import in a single
+  // pass per batch rather than one query per message.
+  sock.ev.on('messaging-history.set', async ({ messages, isLatest }) => {
+    if (!messages || messages.length === 0) return;
+    try {
+      const { logMessage } = require('../db/messages');
+      const { upsertContact } = require('../db/contacts');
+      const { extractText, getMessageType } = require('../handlers/messageHandler');
+
+      logger.info({ botId, count: messages.length, isLatest }, 'Received history sync batch — importing');
+      let imported = 0;
+      for (const m of messages) {
+        if (!m.message || !m.key?.remoteJid) continue;
+        if (m.key.remoteJid.endsWith('@g.us')) continue; // groups out of scope, same as live messages
+        if (m.key.remoteJid === 'status@broadcast') continue;
+
+        const jid = m.key.remoteJid;
+        const direction = m.key.fromMe ? 'outgoing' : 'incoming';
+        const createdAt = m.messageTimestamp
+          ? new Date(Number(m.messageTimestamp) * 1000).toISOString()
+          : null;
+
+        try {
+          await logMessage({
+            botId,
+            jid,
+            messageId: m.key.id,
+            direction,
+            messageType: getMessageType(m),
+            body: extractText(m).trim() || null,
+            createdAt,
+          });
+          if (!m.key.fromMe) {
+            await upsertContact(botId, jid, m.pushName || null);
+          }
+          imported++;
+        } catch (err) {
+          // One bad row shouldn't stop importing the other thousands.
+        }
+      }
+      logger.info({ botId, imported }, 'History sync batch imported');
+    } catch (err) {
+      logger.warn({ err, botId }, 'Failed to import history sync batch');
+    }
+  });
+
   sock.ev.on('call', async (calls) => {
     try {
       const { getFeatures } = require('../db/botFeatures');
