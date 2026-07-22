@@ -323,54 +323,16 @@ async function startBotSocket(botId, slug, onReady) {
   return sock;
 }
 
-async function requestPairingCodeForBot(botId, slug, phoneNumber) {
-  let entry = activeBots.get(botId);
-
-  // Self-healing: normally a socket already exists (started when the bot
-  // was created). But that initial start is fire-and-forget and can fail
-  // silently for all sorts of transient reasons — leaving this bot with no
-  // entry at all, forever, with no visible error. Rather than silently
-  // doing nothing (the previous behavior, and the actual bug), start the
-  // socket right now on demand.
-  if (!entry || !entry.sock) {
-    try {
-      const { onBotReady } = require('../handlers/botStartHook');
-      await startBotSocket(botId, slug, onBotReady);
-      entry = activeBots.get(botId);
-    } catch (err) {
-      logger.error({ err, botId }, 'Failed to lazily start bot socket for pairing code request');
-      return false;
-    }
-  }
-
-  if (!entry || !entry.sock) return false;
-
-  // startBotSocket() returns as soon as the socket OBJECT exists, not once
-  // its underlying WebSocket has actually finished connecting — calling
-  // requestPairingCode before that handshake completes is exactly what
-  // produced "Connection Closed" / statusCode 428. Poll briefly for the
-  // transport to actually be open before trying.
-  const waitForOpen = async (sock, timeoutMs = 8000) => {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (sock.ws?.readyState === 1) return true; // 1 = OPEN
-      await new Promise((r) => setTimeout(r, 150));
-    }
-    return sock.ws?.readyState === 1;
-  };
-  await waitForOpen(entry.sock);
-
+function requestPairingCodeForBot(botId, phoneNumber) {
+  const entry = activeBots.get(botId);
+  if (!entry) return false;
   entry.pendingPairingNumber = phoneNumber;
-  if (!entry.sock.authState?.creds?.registered) {
-    try {
-      const code = await entry.sock.requestPairingCode(phoneNumber);
+  if (entry.sock && !entry.sock.authState?.creds?.registered) {
+    entry.sock.requestPairingCode(phoneNumber).then((code) => {
       entry.pairingCode = code;
       entry.status = 'pairing_code_pending';
       entry.pendingPairingNumber = null;
-    } catch (err) {
-      logger.error({ err, botId }, 'Pairing code request failed');
-      return false;
-    }
+    }).catch((err) => logger.error({ err, botId }, 'Immediate pairing code request failed'));
   }
   return true;
 }

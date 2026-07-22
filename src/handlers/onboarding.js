@@ -1,7 +1,7 @@
 const express = require('express');
 const QRCode = require('qrcode');
 const { getBotBySlug } = require('../db/bots');
-const { getBotState, requestPairingCodeForBot, startBotSocket } = require('../utils/botManager');
+const { getBotState, requestPairingCodeForBot } = require('../utils/botManager');
 
 function layout(title, body) {
   return `
@@ -30,23 +30,7 @@ function createOnboardingRoutes() {
     const bot = await getBotBySlug(req.params.slug);
     if (!bot) return res.status(404).send(layout('Not found', '<h2>This link is invalid or has expired.</h2>'));
 
-    let state = getBotState(bot.id);
-
-    // Same self-healing logic as the pairing code route: the socket should
-    // already exist from bot creation, but that initial start is
-    // fire-and-forget and can fail silently, leaving no state at all with
-    // no visible error. If there's truly nothing running for this bot yet,
-    // start it now instead of showing a dead end forever.
-    if (!state) {
-      try {
-        const { onBotReady } = require('./botStartHook');
-        await startBotSocket(bot.id, bot.slug, onBotReady);
-        state = getBotState(bot.id);
-      } catch (err) {
-        return res.send(layout('Error', '<h2>Something went wrong starting your bot. Please try again in a moment.</h2>'));
-      }
-    }
-
+    const state = getBotState(bot.id);
     const status = state?.status || bot.status;
 
     if (status === 'connected') {
@@ -111,13 +95,7 @@ function createOnboardingRoutes() {
     if (!bot) return res.status(404).send('Invalid link.');
     const digits = (req.body.number || '').replace(/[^0-9]/g, '');
     if (!digits) return res.status(400).send('Invalid phone number.');
-    const ok = await requestPairingCodeForBot(bot.id, bot.slug, digits);
-    if (!ok) {
-      return res.send(layout('Error', `
-        <h2>Something went wrong requesting a pairing code.</h2>
-        <p><a href="/connect/${bot.slug}/pair">Try again</a></p>
-      `));
-    }
+    requestPairingCodeForBot(bot.id, digits);
     res.send(layout('Requesting...', `
       <head><meta http-equiv="refresh" content="3;url=/connect/${bot.slug}/pair"></head>
       <h3>Requesting pairing code...</h3>
