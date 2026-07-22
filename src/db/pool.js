@@ -7,9 +7,11 @@ if (!process.env.DATABASE_URL) {
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('render.com')
-    ? { rejectUnauthorized: false }
-    : (process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false),
+  // Every mainstream hosted Postgres (Render, Neon, Supabase, etc.)
+  // requires SSL, and none of them mind rejectUnauthorized:false for a
+  // managed connection. Applying this unconditionally avoids depending on
+  // NODE_ENV being set correctly to get a working connection.
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
