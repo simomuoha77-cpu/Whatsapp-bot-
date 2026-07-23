@@ -1,7 +1,7 @@
 const express = require('express');
 const QRCode = require('qrcode');
 const { getBotBySlug } = require('../db/bots');
-const { getBotState, requestPairingCodeForBot, startBotSocket } = require('../utils/botManager');
+const { getBotState, requestPairingCodeForBot, startBotSocket, enqueueConnect } = require('../utils/botManager');
 
 function layout(title, body) {
   return `
@@ -40,7 +40,7 @@ function createOnboardingRoutes() {
     if (!state) {
       try {
         const { onBotReady } = require('./botStartHook');
-        await startBotSocket(bot.id, bot.slug, onBotReady);
+        await enqueueConnect(() => startBotSocket(bot.id, bot.slug, onBotReady));
         state = getBotState(bot.id);
       } catch (err) {
         return res.send(layout('Error', '<h2>Something went wrong starting your bot. Please try again in a moment.</h2>'));

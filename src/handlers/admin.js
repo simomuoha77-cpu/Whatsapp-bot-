@@ -29,7 +29,7 @@ const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownSta
 const { getPricingSettings, updatePricingSettings } = require('../db/pricingSettings');
 const { getSubscription, isSubscriptionActive } = require('../db/subscriptions');
 const { getPaymentsForBot } = require('../db/payments');
-const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { refreshScheduler } = require('./scheduler');
 
 function layout(title, body) {
@@ -161,7 +161,7 @@ function createAdminRoutes() {
 
   router.post('/bots', async (req, res) => {
     const bot = await createBot(req.body.clientName);
-    await startBotSocket(bot.id, bot.slug, require('./botStartHook').onBotReady).catch((err) =>
+    await enqueueConnect(() => startBotSocket(bot.id, bot.slug, require('./botStartHook').onBotReady)).catch((err) =>
       logger.error({ err, botId: bot.id }, 'Failed to start bot socket on admin bot creation')
     );
     res.redirect(`/admin/bot/${bot.id}`);
