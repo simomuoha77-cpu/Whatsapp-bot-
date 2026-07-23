@@ -323,17 +323,39 @@ async function startBotSocket(botId, slug, onReady) {
   return sock;
 }
 
-function requestPairingCodeForBot(botId, phoneNumber) {
-  const entry = activeBots.get(botId);
-  if (!entry) return false;
-  entry.pendingPairingNumber = phoneNumber;
-  if (entry.sock && !entry.sock.authState?.creds?.registered) {
-    entry.sock.requestPairingCode(phoneNumber).then((code) => {
-      entry.pairingCode = code;
-      entry.status = 'pairing_code_pending';
-      entry.pendingPairingNumber = null;
-    }).catch((err) => logger.error({ err, botId }, 'Immediate pairing code request failed'));
+async function requestPairingCodeForBot(botId, slug, phoneNumber) {
+  let entry = activeBots.get(botId);
+
+  // Self-healing: normally a socket already exists (started when the bot
+  // was created). But that initial start is fire-and-forget and can fail
+  // silently for all sorts of transient reasons — leaving this bot with no
+  // entry at all, forever, with no visible error. Rather than silently
+  // doing nothing (the previous behavior, and the actual bug), start the
+  // socket right now on demand.
+  if (!entry || !entry.sock) {
+    try {
+      const { onBotReady } = require('../handlers/botStartHook');
+      await startBotSocket(botId, slug, onBotReady);
+      entry = activeBots.get(botId);
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to lazily start bot socket for pairing code request');
+      return false;
+    }
   }
+
+  if (!entry || !entry.sock) return false;
+
+  // IMPORTANT: don't call sock.requestPairingCode() here directly. There's
+  // already a listener in connection.update (below) that requests the code
+  // at the exact moment the socket reaches the 'connecting' state — which
+  // is the moment Baileys actually expects it. Calling it a second time,
+  // from out here, raced ahead of that handshake and produced "Connection
+  // Closed" errors — and worse, risked requesting a pairing code twice on
+  // the same socket, which is a very plausible cause of the repeated
+  // disconnects we were seeing. Setting this flag is enough: an
+  // unregistered socket cycles through 'connecting' on its own (including
+  // on this fresh lazy-start), so the existing handler will pick it up.
+  entry.pendingPairingNumber = phoneNumber;
   return true;
 }
 
