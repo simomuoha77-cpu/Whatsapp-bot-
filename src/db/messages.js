@@ -1,11 +1,10 @@
 const { query } = require('./pool');
 
-async function logMessage({ botId, jid, messageId, direction, messageType, body, mediaPath, createdAt }) {
+async function logMessage({ botId, jid, messageId, direction, messageType, body, mediaPath }) {
   await query(
-    `INSERT INTO messages (bot_id, jid, message_id, direction, message_type, body, media_path, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
-     ON CONFLICT (bot_id, message_id) WHERE message_id IS NOT NULL DO NOTHING`,
-    [botId, jid, messageId || null, direction, messageType || 'text', body || null, mediaPath || null, createdAt || null]
+    `INSERT INTO messages (bot_id, jid, message_id, direction, message_type, body, media_path)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [botId, jid, messageId || null, direction, messageType || 'text', body || null, mediaPath || null]
   );
 }
 
