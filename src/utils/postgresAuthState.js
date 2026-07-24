@@ -32,29 +32,6 @@ async function usePostgresAuthState(botId) {
     }
   };
 
-  // Batched read for multiple key ids of the same type in one round-trip —
-  // a handshake can ask for dozens of signal keys at once, and doing one
-  // query per key sequentially (the original approach) adds up to real,
-  // meaningful delay, especially against any hosted Postgres with per-query
-  // network latency. This is the single most-called path during connect.
-  const readValues = async (keyType, keyIds) => {
-    if (keyIds.length === 0) return {};
-    const res = await query(
-      'SELECT key_id, value FROM bot_auth_state WHERE bot_id = $1 AND key_type = $2 AND key_id = ANY($3::text[])',
-      [botId, keyType, keyIds]
-    );
-    const out = {};
-    for (const row of res.rows) {
-      if (row.value === null) continue;
-      try {
-        out[row.key_id] = JSON.parse(row.value, BufferJSON.reviver);
-      } catch (err) {
-        logger.error({ err, botId, keyType, keyId: row.key_id }, 'Failed to parse stored auth value');
-      }
-    }
-    return out;
-  };
-
   const writeValue = async (keyType, keyId, value) => {
     const serialized = value === null ? null : JSON.stringify(value, BufferJSON.replacer);
     await query(
@@ -65,36 +42,10 @@ async function usePostgresAuthState(botId) {
     );
   };
 
-  // Batched upsert for writing several keys (possibly across categories)
-  // in one round-trip via UNNEST, instead of one INSERT per key — same
-  // reasoning as readValues above.
-  const writeValues = async (entries) => {
-    if (entries.length === 0) return;
-    const keyTypes = entries.map((e) => e.keyType);
-    const keyIds = entries.map((e) => e.keyId || '');
-    const values = entries.map((e) => (e.value === null ? null : JSON.stringify(e.value, BufferJSON.replacer)));
-    await query(
-      `INSERT INTO bot_auth_state (bot_id, key_type, key_id, value, updated_at)
-       SELECT $1, t.key_type, t.key_id, t.value, NOW()
-       FROM UNNEST($2::text[], $3::text[], $4::text[]) AS t(key_type, key_id, value)
-       ON CONFLICT (bot_id, key_type, key_id) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      [botId, keyTypes, keyIds, values]
-    );
-  };
-
   const deleteValue = async (keyType, keyId) => {
     await query(
       'DELETE FROM bot_auth_state WHERE bot_id = $1 AND key_type = $2 AND key_id = $3',
       [botId, keyType, keyId || '']
-    );
-  };
-
-  // Batched delete for multiple ids of one type in one round-trip.
-  const deleteValues = async (keyType, keyIds) => {
-    if (keyIds.length === 0) return;
-    await query(
-      'DELETE FROM bot_auth_state WHERE bot_id = $1 AND key_type = $2 AND key_id = ANY($3::text[])',
-      [botId, keyType, keyIds]
     );
   };
 
@@ -105,38 +56,27 @@ async function usePostgresAuthState(botId) {
     creds,
     keys: {
       get: async (type, ids) => {
-        const raw = await readValues(type, ids);
         const result = {};
         for (const id of ids) {
-          let value = raw[id];
-          if (value === undefined) continue;
+          let value = await readValue(type, id);
           if (type === 'app-state-sync-key' && value) {
             value = proto.Message.AppStateSyncKeyData.fromObject(value);
           }
-          result[id] = value;
+          if (value) result[id] = value;
         }
         return result;
       },
       set: async (data) => {
-        const toWrite = [];
-        const toDeleteByType = {};
         for (const category in data) {
           for (const id in data[category]) {
             const value = data[category][id];
             if (value) {
-              toWrite.push({ keyType: category, keyId: id, value });
+              await writeValue(category, id, value);
             } else {
-              (toDeleteByType[category] ||= []).push(id);
+              await deleteValue(category, id);
             }
           }
         }
-        // Fire the write batch and all delete batches together rather than
-        // sequentially — different categories don't depend on each other.
-        const tasks = [writeValues(toWrite)];
-        for (const category in toDeleteByType) {
-          tasks.push(deleteValues(category, toDeleteByType[category]));
-        }
-        await Promise.all(tasks);
       },
     },
   };
