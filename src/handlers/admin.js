@@ -65,6 +65,47 @@ function nav() {
   return `<nav><a href="/admin">Clients</a><a href="/admin/logout">Logout</a></nav>`;
 }
 
+// A separate layout from the generic admin one above — full-bleed, dark
+// theme matching real WhatsApp Web's actual colors and proportions, used
+// only for the chat list and chat thread pages so they genuinely look and
+// feel like a linked WhatsApp Web session instead of a plain admin list.
+function whatsappLayout(title, body) {
+  return `
+    <html>
+      <head>
+        <title>${title}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>
+          * { box-sizing: border-box; }
+          body { margin: 0; font-family: 'Segoe UI', Helvetica, Arial, sans-serif; background: #111b21; color: #e9edef; height: 100vh; overflow: hidden; }
+          .wa-header { background: #202c33; padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
+          .wa-header a { color: #aebac1; text-decoration: none; font-size: 20px; }
+          .wa-header .title { font-size: 16px; font-weight: 500; }
+          .wa-avatar { width: 40px; height: 40px; border-radius: 50%; background: #6a7175; display: flex; align-items: center; justify-content: center; font-weight: 600; color: #111b21; flex-shrink: 0; }
+          .wa-list { overflow-y: auto; height: calc(100vh - 60px); }
+          .wa-row { display: flex; align-items: center; gap: 14px; padding: 12px 16px; text-decoration: none; color: inherit; border-bottom: 1px solid #202c33; }
+          .wa-row:active, .wa-row:hover { background: #202c33; }
+          .wa-row .meta { flex: 1; min-width: 0; }
+          .wa-row .name { font-size: 16px; color: #e9edef; }
+          .wa-row .preview { font-size: 14px; color: #8696a0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+          .wa-row .time { font-size: 12px; color: #8696a0; flex-shrink: 0; }
+          .wa-chat-bg { background: #0b141a; height: calc(100vh - 60px); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 2px; }
+          .wa-bubble-wrap { display: flex; }
+          .wa-bubble-wrap.out { justify-content: flex-end; }
+          .wa-bubble-wrap.in { justify-content: flex-start; }
+          .wa-bubble { max-width: 75%; padding: 6px 9px 8px 9px; border-radius: 8px; font-size: 14.5px; line-height: 1.35; position: relative; }
+          .wa-bubble.out { background: #005c4b; color: #e9edef; border-top-right-radius: 0; }
+          .wa-bubble.in { background: #202c33; color: #e9edef; border-top-left-radius: 0; }
+          .wa-bubble .time { display: block; text-align: right; font-size: 11px; color: #ffffff99; margin-top: 3px; }
+          .wa-bubble.in .time { color: #8696a0; }
+          .wa-empty { color: #8696a0; text-align: center; margin-top: 40px; font-size: 14px; }
+        </style>
+      </head>
+      <body>${body}</body>
+    </html>
+  `;
+}
+
 function statusPill(status) {
   const map = { connected: 'connected', disconnected: 'disconnected' };
   const cls = map[status] || 'pending';
@@ -402,6 +443,7 @@ function createAdminRoutes() {
 
       <div class="card">
         <h3>Chats</h3>
+        <p><a href="/admin/bot/${botId}/whatsapp" style="display:inline-block;background:#00a884;color:white;text-decoration:none;padding:8px 14px;border-radius:6px;margin-bottom:12px;">💬 Open full WhatsApp-style view</a></p>
         ${addContactForm}
         ${contactRows}
       </div>
@@ -476,6 +518,59 @@ function createAdminRoutes() {
     `));
   });
 
+  // Full WhatsApp-Web-styled chat list for this bot — separate from the
+  // dense admin dashboard page, so it actually looks like a linked
+  // WhatsApp Web session instead of a plain list inside the admin shell.
+  router.get('/bot/:id/whatsapp', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const bot = await getBotById(botId);
+    if (!bot) return res.status(404).send(layout('Not found', '<h2>Client not found.</h2>'));
+
+    const contacts = await getContactsForBot(botId, 200);
+    const recentChats = await getRecentChatsForBot(botId, 100);
+    const nameByJid = {};
+    for (const c of contacts) nameByJid[c.jid] = c.display_name || c.phone_number;
+
+    const formatChatTime = (iso) => {
+      const d = new Date(iso);
+      const now = new Date();
+      if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const daysAgo = Math.floor((now - d) / (1000 * 60 * 60 * 24));
+      if (daysAgo < 7) return d.toLocaleDateString([], { weekday: 'short' });
+      return d.toLocaleDateString([], { month: 'numeric', day: 'numeric', year: '2-digit' });
+    };
+    const previewText = (m) => {
+      if (m.body) return m.body.length > 45 ? m.body.slice(0, 45) + '…' : m.body;
+      const icons = { image: '📷 Photo', video: '🎥 Video', audio: '🎤 Audio', document: '📄 Document' };
+      return icons[m.message_type] || '[message]';
+    };
+
+    const rows = recentChats.map((m) => {
+      const name = nameByJid[m.jid] || m.jid.split('@')[0];
+      const initial = (name[0] || '?').toUpperCase();
+      const prefix = m.direction === 'outgoing' ? 'You: ' : '';
+      return `
+        <a class="wa-row" href="/admin/bot/${botId}/chat/${encodeURIComponent(m.jid)}">
+          <div class="wa-avatar">${initial}</div>
+          <div class="meta">
+            <div class="name">${name}</div>
+            <div class="preview">${prefix}${previewText(m).replace(/</g, '&lt;')}</div>
+          </div>
+          <div class="time">${formatChatTime(m.created_at)}</div>
+        </a>
+      `;
+    }).join('') || '<p class="wa-empty">No chats yet.</p>';
+
+    res.send(whatsappLayout(bot.slug, `
+      <div class="wa-header">
+        <a href="/admin/bot/${botId}" title="Back to admin">&larr;</a>
+        <div class="wa-avatar">${(bot.slug[0] || '?').toUpperCase()}</div>
+        <div class="title">${bot.slug}</div>
+      </div>
+      <div class="wa-list">${rows}</div>
+    `));
+  });
+
   // Admin-only chat viewer — lets the platform admin see a contact's full
   // message thread with a given bot, for support/moderation. Intentionally
   // NOT exposed on the client dashboard (client.js) — a bot owner already
@@ -488,44 +583,49 @@ function createAdminRoutes() {
     if (!bot) return res.status(404).send(layout('Not found', '<h2>Client not found.</h2>'));
 
     const thread = await getThreadForContact(botId, jid, 200);
+    const contact = (await getContactsForBot(botId, 200)).find((c) => c.jid === jid);
+    const name = contact?.display_name || contact?.phone_number || jid.split('@')[0];
+    const initial = (name[0] || '?').toUpperCase();
+
+    const bubbleTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const bubbleContent = (m) => {
+      if (m.body) return String(m.body).replace(/</g, '&lt;');
+      const icons = { image: '📷 Photo', video: '🎥 Video', audio: '🎤 Audio', document: '📄 Document' };
+      return icons[m.message_type] || `[${m.message_type}]`;
+    };
 
     const messageRows = thread.map((m) => `
-      <div class="row" style="justify-content:${m.direction === 'outgoing' ? 'flex-end' : 'flex-start'};border-bottom:none;">
-        <div style="max-width:80%;background:${m.direction === 'outgoing' ? '#1e3a5f' : '#2a2a2a'};padding:8px 12px;border-radius:10px;">
-          <div>${m.body ? String(m.body).replace(/</g, '&lt;') : `[${m.message_type}]`}</div>
-          <small style="opacity:0.6;">${new Date(m.created_at).toLocaleString()}</small>
+      <div class="wa-bubble-wrap ${m.direction === 'outgoing' ? 'out' : 'in'}">
+        <div class="wa-bubble ${m.direction === 'outgoing' ? 'out' : 'in'}">
+          <div>${bubbleContent(m)}</div>
+          <span class="time">${bubbleTime(m.created_at)}</span>
         </div>
       </div>
-    `).join('') || '<p>No messages in this thread yet.</p>';
+    `).join('') || '<p class="wa-empty">No messages in this thread yet.</p>';
 
-    const html = `
-      ${nav()}
-      <a href="/admin/bot/${botId}">&larr; Back to ${bot.slug}</a>
-      <div class="card" style="margin-top:12px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <h2>Chat with ${jid.split('@')[0]}</h2>
-          <form method="POST" action="/admin/bot/${botId}/chat/${encodeURIComponent(jid)}/delete"
-                onsubmit="return confirm('Delete this whole conversation? This wipes it from the admin view and attempts to delete-for-everyone the bot\\'s own sent messages on WhatsApp. The other person\\'s own messages can only be removed here, not from their phone.');">
-            <button type="submit" class="danger">Delete conversation</button>
-          </form>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:8px;">${messageRows}</div>
-      </div>
-      <div class="card" style="margin-top:12px;">
-        <h3>Disappearing Messages</h3>
-        <p><small>Applies to future messages in this chat only, for both sides — same as WhatsApp's own disappearing messages feature. It does not remove anything already sent.</small></p>
-        <form method="POST" action="/admin/bot/${botId}/chat/${encodeURIComponent(jid)}/disappearing" style="display:flex;gap:8px;">
-          <select name="duration" style="flex:1;">
-            <option value="86400">24 hours</option>
-            <option value="604800">7 days</option>
-            <option value="7776000">90 days</option>
-            <option value="0">Off</option>
+    res.send(whatsappLayout(`Chat — ${name}`, `
+      <div class="wa-header">
+        <a href="/admin/bot/${botId}/whatsapp" title="Back to chats">&larr;</a>
+        <div class="wa-avatar">${initial}</div>
+        <div class="title">${name}</div>
+        <div style="flex:1;"></div>
+        <form method="POST" action="/admin/bot/${botId}/chat/${encodeURIComponent(jid)}/disappearing" style="margin:0;display:flex;align-items:center;gap:4px;">
+          <select name="duration" title="Disappearing messages (applies to future messages only)" style="width:auto;background:#2a3942;color:#e9edef;border:none;border-radius:4px;padding:4px;font-size:12px;">
+            <option value="0">⏱️ Off</option>
+            <option value="86400">⏱️ 24h</option>
+            <option value="604800">⏱️ 7d</option>
+            <option value="7776000">⏱️ 90d</option>
           </select>
-          <button type="submit" style="width:auto;">Apply</button>
+          <button type="submit" title="Apply" style="background:none;border:none;color:#aebac1;font-size:14px;cursor:pointer;width:auto;padding:4px;">✓</button>
+        </form>
+        <form method="POST" action="/admin/bot/${botId}/chat/${encodeURIComponent(jid)}/delete"
+              onsubmit="return confirm('Delete this whole conversation? This wipes it from the admin view and attempts to delete-for-everyone the bot\\'s own sent messages on WhatsApp. The other person\\'s own messages can only be removed here, not from their phone.');"
+              style="margin:0;">
+          <button type="submit" title="Delete conversation" style="background:none;border:none;color:#aebac1;font-size:18px;cursor:pointer;width:auto;padding:4px;">🗑️</button>
         </form>
       </div>
-    `;
-    res.send(layout(`Chat — ${jid.split('@')[0]}`, html));
+      <div class="wa-chat-bg">${messageRows}</div>
+    `));
   });
 
   router.post('/bot/:id/chat/:jid/disappearing', async (req, res) => {
