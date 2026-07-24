@@ -477,4 +477,4 @@ function registerMessageHandler(sock, botId) {
   });
 }
 
-module.exports = { registerMessageHandler };
+module.exports = { registerMessageHandler, extractText, getMessageType };

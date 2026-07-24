@@ -59,7 +59,12 @@ async function startBotSocket(botId, slug, onReady) {
     },
     msgRetryCounterCache: new NodeCache(),
     generateHighQualityLinkPreview: true,
-    syncFullHistory: false,
+    // WhatsApp only sends this history payload once, right when a device
+    // is freshly linked (or relinked) — it will NOT retroactively backfill
+    // an already-connected session. Turning this on means any bot that
+    // gets linked/relinked from now on will populate real chat history
+    // into our own messages table via the messaging-history.set handler.
+    syncFullHistory: true,
     markOnlineOnConnect: false,
     // Baileys' unlabeled default linked-device name is itself a signal —
     // every real WhatsApp Web/Desktop session identifies as a real browser.
@@ -82,6 +87,55 @@ async function startBotSocket(botId, slug, onReady) {
 
   // Anti-Call: auto-reject incoming voice/video calls before they ring
   // through, optionally replying with a text explaining why.
+  // Real chat history — WhatsApp only sends this once, right when a device
+  // is freshly linked/relinked (syncFullHistory: true above is what asks
+  // for it). It arrives as one or more batches, each potentially containing
+  // thousands of old messages across every chat, so we import in a single
+  // pass per batch rather than one query per message.
+  sock.ev.on('messaging-history.set', async ({ messages, isLatest }) => {
+    if (!messages || messages.length === 0) return;
+    try {
+      const { logMessage } = require('../db/messages');
+      const { upsertContact } = require('../db/contacts');
+      const { extractText, getMessageType } = require('../handlers/messageHandler');
+
+      logger.info({ botId, count: messages.length, isLatest }, 'Received history sync batch — importing');
+      let imported = 0;
+      for (const m of messages) {
+        if (!m.message || !m.key?.remoteJid) continue;
+        if (m.key.remoteJid.endsWith('@g.us')) continue; // groups out of scope, same as live messages
+        if (m.key.remoteJid === 'status@broadcast') continue;
+
+        const jid = m.key.remoteJid;
+        const direction = m.key.fromMe ? 'outgoing' : 'incoming';
+        const createdAt = m.messageTimestamp
+          ? new Date(Number(m.messageTimestamp) * 1000).toISOString()
+          : null;
+
+        try {
+          await logMessage({
+            botId,
+            jid,
+            messageId: m.key.id,
+            direction,
+            messageType: getMessageType(m),
+            body: extractText(m).trim() || null,
+            createdAt,
+          });
+          if (!m.key.fromMe) {
+            await upsertContact(botId, jid, m.pushName || null);
+          }
+          imported++;
+        } catch (err) {
+          // One bad row shouldn't stop importing the other thousands.
+        }
+      }
+      logger.info({ botId, imported }, 'History sync batch imported');
+    } catch (err) {
+      logger.warn({ err, botId }, 'Failed to import history sync batch');
+    }
+  });
+
   sock.ev.on('call', async (calls) => {
     try {
       const { getFeatures } = require('../db/botFeatures');
@@ -261,7 +315,7 @@ async function startBotSocket(botId, slug, onReady) {
           { botId, statusCode, attempt: entry.reconnectAttempts, delayMs },
           'Bot disconnected, reconnecting with backoff...'
         );
-        setTimeout(() => startBotSocket(botId, slug, onReady), delayMs);
+        setTimeout(() => enqueueConnect(() => startBotSocket(botId, slug, onReady)), delayMs);
       }
     }
   });
@@ -269,17 +323,39 @@ async function startBotSocket(botId, slug, onReady) {
   return sock;
 }
 
-function requestPairingCodeForBot(botId, phoneNumber) {
-  const entry = activeBots.get(botId);
-  if (!entry) return false;
-  entry.pendingPairingNumber = phoneNumber;
-  if (entry.sock && !entry.sock.authState?.creds?.registered) {
-    entry.sock.requestPairingCode(phoneNumber).then((code) => {
-      entry.pairingCode = code;
-      entry.status = 'pairing_code_pending';
-      entry.pendingPairingNumber = null;
-    }).catch((err) => logger.error({ err, botId }, 'Immediate pairing code request failed'));
+async function requestPairingCodeForBot(botId, slug, phoneNumber) {
+  let entry = activeBots.get(botId);
+
+  // Self-healing: normally a socket already exists (started when the bot
+  // was created). But that initial start is fire-and-forget and can fail
+  // silently for all sorts of transient reasons — leaving this bot with no
+  // entry at all, forever, with no visible error. Rather than silently
+  // doing nothing (the previous behavior, and the actual bug), start the
+  // socket right now on demand.
+  if (!entry || !entry.sock) {
+    try {
+      const { onBotReady } = require('../handlers/botStartHook');
+      await enqueueConnect(() => startBotSocket(botId, slug, onBotReady));
+      entry = activeBots.get(botId);
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to lazily start bot socket for pairing code request');
+      return false;
+    }
   }
+
+  if (!entry || !entry.sock) return false;
+
+  // IMPORTANT: don't call sock.requestPairingCode() here directly. There's
+  // already a listener in connection.update (below) that requests the code
+  // at the exact moment the socket reaches the 'connecting' state — which
+  // is the moment Baileys actually expects it. Calling it a second time,
+  // from out here, raced ahead of that handshake and produced "Connection
+  // Closed" errors — and worse, risked requesting a pairing code twice on
+  // the same socket, which is a very plausible cause of the repeated
+  // disconnects we were seeing. Setting this flag is enough: an
+  // unregistered socket cycles through 'connecting' on its own (including
+  // on this fresh lazy-start), so the existing handler will pick it up.
+  entry.pendingPairingNumber = phoneNumber;
   return true;
 }
 
@@ -291,21 +367,65 @@ function requestPairingCodeForBot(botId, phoneNumber) {
  */
 async function startAllBots(onReady) {
   const result = await query('SELECT id, slug, status FROM bots');
-  // Starting every bot's WebSocket at the exact same instant is what was
-  // causing the mass "statusCode 408" disconnect storms — the server
-  // can't establish/sync that many sessions simultaneously, so they time
-  // out, retry, and pile up again. Staggering startup by a few hundred ms
-  // per bot spreads the load out so each connection actually has a chance
-  // to establish before the next one starts.
-  const STAGGER_MS = parseInt(process.env.BOT_STARTUP_STAGGER_MS || '3500', 10);
-  result.rows.forEach((bot, index) => {
-    setTimeout(() => {
-      startBotSocket(bot.id, bot.slug, onReady).catch((err) =>
-        logger.error({ err, botId: bot.id }, 'Failed to start bot socket on startup')
-      );
-    }, index * STAGGER_MS);
+  // Startup now uses the same global connect queue as reconnects (see
+  // enqueueConnect above) — one mechanism, one place governing the whole
+  // fleet's connection rate, instead of a separate stagger system that
+  // could still overlap with reconnect attempts and burst together.
+  result.rows.forEach((bot) => {
+    enqueueConnect(() => startBotSocket(bot.id, bot.slug, onReady)).catch((err) =>
+      logger.error({ err, botId: bot.id }, 'Failed to start bot socket on startup')
+    );
   });
-  logger.info({ count: result.rows.length, staggerMs: STAGGER_MS }, 'Scheduled staggered startup for all existing bots');
+  logger.info(
+    { count: result.rows.length, gapMs: MIN_GAP_BETWEEN_CONNECTS_MS },
+    'Queued startup for all existing bots through the global connect gate'
+  );
+}
+
+/**
+ * Global gate on new connection attempts across the ENTIRE fleet of bots.
+ *
+ * The per-bot exponential backoff above only controls how often ONE bot
+ * retries — it does nothing to limit how many DIFFERENT bots might all be
+ * attempting a connection in the same second. With dozens of bots each
+ * independently reconnecting on their own few-second timers, the combined
+ * attempt rate across the whole fleet can be many connections/second
+ * hitting WhatsApp from this one server's IP — a very plausible trigger
+ * for WhatsApp's own abuse detection to start rejecting connections
+ * outright (which shows up as an immediate "connectionClosed"/428), which
+ * then triggers more retries, compounding the problem indefinitely.
+ *
+ * This queue is the single choke point for every connection attempt,
+ * whatever triggers it (initial boot, reconnect-after-close, or an
+ * on-demand lazy start for pairing) — only one attempt goes out at a time,
+ * fleet-wide, with a fixed minimum gap between them.
+ */
+const connectQueue = [];
+let drainingConnectQueue = false;
+const MIN_GAP_BETWEEN_CONNECTS_MS = parseInt(process.env.MIN_CONNECT_GAP_MS || '2000', 10);
+
+function enqueueConnect(task) {
+  return new Promise((resolve, reject) => {
+    connectQueue.push({ task, resolve, reject });
+    drainConnectQueue();
+  });
+}
+
+async function drainConnectQueue() {
+  if (drainingConnectQueue) return;
+  drainingConnectQueue = true;
+  while (connectQueue.length > 0) {
+    const { task, resolve, reject } = connectQueue.shift();
+    try {
+      resolve(await task());
+    } catch (err) {
+      reject(err);
+    }
+    if (connectQueue.length > 0) {
+      await new Promise((r) => setTimeout(r, MIN_GAP_BETWEEN_CONNECTS_MS));
+    }
+  }
+  drainingConnectQueue = false;
 }
 
 async function deleteBotSession(botId) {
@@ -320,4 +440,5 @@ module.exports = {
   getAllBotStates,
   requestPairingCodeForBot,
   deleteBotSession,
+  enqueueConnect,
 };

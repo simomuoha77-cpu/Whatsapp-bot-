@@ -18,7 +18,7 @@ const {
   setStealthReadMode,
 } = require('../db/botFeatures');
 const { getContactsForBot, manuallyAddContact } = require('../db/contacts');
-const { getThreadForContact, deleteThread } = require('../db/messages');
+const { getThreadForContact, deleteThread, getRecentChatsForBot } = require('../db/messages');
 const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
 const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
@@ -29,7 +29,7 @@ const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownSta
 const { getPricingSettings, updatePricingSettings } = require('../db/pricingSettings');
 const { getSubscription, isSubscriptionActive } = require('../db/subscriptions');
 const { getPaymentsForBot } = require('../db/payments');
-const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { refreshScheduler } = require('./scheduler');
 
 function layout(title, body) {
@@ -161,7 +161,9 @@ function createAdminRoutes() {
 
   router.post('/bots', async (req, res) => {
     const bot = await createBot(req.body.clientName);
-    await startBotSocket(bot.id, bot.slug, require('./botStartHook').onBotReady).catch(() => {});
+    await enqueueConnect(() => startBotSocket(bot.id, bot.slug, require('./botStartHook').onBotReady)).catch((err) =>
+      logger.error({ err, botId: bot.id }, 'Failed to start bot socket on admin bot creation')
+    );
     res.redirect(`/admin/bot/${bot.id}`);
   });
 
@@ -174,7 +176,8 @@ function createAdminRoutes() {
     const features = await getFeatures(botId);
     const live = getBotState(botId);
     const status = live?.status || bot.status;
-    const contacts = await getContactsForBot(botId, 20);
+    const contacts = await getContactsForBot(botId, 200);
+    const recentChats = await getRecentChatsForBot(botId, 50);
     const posts = await getScheduledStatusPostsForBot(botId);
     const reminders = await getRemindersForBot(botId);
     const viewOnceCaptures = await getViewOnceCapturesForBot(botId, 20);
@@ -199,12 +202,44 @@ function createAdminRoutes() {
       </div>
     `).join('');
 
-    const contactRows = contacts.map((c) => `
-      <div class="row">
-        <a href="/admin/bot/${botId}/chat/${encodeURIComponent(c.jid)}" style="color:inherit;text-decoration:underline;">${c.display_name || c.phone_number}</a>
-        <small>${c.message_count} msgs</small>
-      </div>
-    `).join('') || '<p>No contacts yet.</p>';
+    const nameByJid = {};
+    for (const c of contacts) {
+      nameByJid[c.jid] = c.display_name || c.phone_number;
+    }
+
+    const formatChatTime = (iso) => {
+      const d = new Date(iso);
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      if (isToday) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const daysAgo = Math.floor((now - d) / (1000 * 60 * 60 * 24));
+      if (daysAgo < 7) return d.toLocaleDateString([], { weekday: 'short' });
+      return d.toLocaleDateString([], { month: 'numeric', day: 'numeric', year: '2-digit' });
+    };
+
+    const previewText = (m) => {
+      if (m.body) return m.body.length > 45 ? m.body.slice(0, 45) + '…' : m.body;
+      const icons = { image: '📷 Photo', video: '🎥 Video', audio: '🎤 Audio', document: '📄 Document' };
+      return icons[m.message_type] || '[message]';
+    };
+
+    const contactRows = recentChats.map((m) => {
+      const name = nameByJid[m.jid] || m.jid.split('@')[0];
+      const initial = (name[0] || '?').toUpperCase();
+      const prefix = m.direction === 'outgoing' ? '<span style="opacity:0.7;">You: </span>' : '';
+      return `
+        <a href="/admin/bot/${botId}/chat/${encodeURIComponent(m.jid)}" style="text-decoration:none;color:inherit;">
+          <div class="row" style="align-items:center;gap:12px;">
+            <div style="width:44px;height:44px;border-radius:50%;background:#2a2a2a;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-weight:600;">${initial}</div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:600;">${name}</div>
+              <div style="opacity:0.7;font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${prefix}${previewText(m)}</div>
+            </div>
+            <small style="flex-shrink:0;opacity:0.6;">${formatChatTime(m.created_at)}</small>
+          </div>
+        </a>
+      `;
+    }).join('') || '<p>No chats yet.</p>';
 
     const addContactForm = `
       <form method="POST" action="/admin/bot/${botId}/contacts/add" style="display:flex;gap:8px;margin-bottom:12px;">
@@ -366,7 +401,7 @@ function createAdminRoutes() {
       </div>
 
       <div class="card">
-        <h3>Recent contacts</h3>
+        <h3>Chats</h3>
         ${addContactForm}
         ${contactRows}
       </div>
