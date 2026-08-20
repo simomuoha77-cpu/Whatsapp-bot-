@@ -35,28 +35,130 @@ function layout(title, body) {
         <title>${title}</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <style>
-          body { font-family: -apple-system, sans-serif; max-width: 480px; margin: 20px auto; padding: 0 16px; background: #0f0f0f; color: #eee; }
-          a { color: #4da6ff; }
-          input, button, select { font-size: 16px; padding: 10px; margin: 6px 0; width: 100%; box-sizing: border-box; background: #1c1c1c; color: #eee; border: 1px solid #333; border-radius: 8px; }
-          button { background: #2563eb; color: white; cursor: pointer; border: none; }
-          .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-          .pill { padding: 2px 10px; border-radius: 12px; font-size: 13px; }
-          .on { background: #14532d; color: #4ade80; }
-          .off { background: #450a0a; color: #f87171; }
-          .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2a2a2a; }
+          :root {
+            --accent: #00a884;
+            --accent-dark: #008a6e;
+            --bg: #0b0f14;
+            --card: #151b23;
+            --card-border: #232b36;
+            --text: #e9edef;
+            --text-dim: #8696a0;
+            --danger: #f87171;
+            --danger-bg: #3a1414;
+            --success-bg: #0d2f22;
+          }
+          * { box-sizing: border-box; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            max-width: 520px; margin: 0 auto; padding: 0 16px 40px;
+            background: var(--bg); color: var(--text); line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+          }
+          a { color: var(--accent); text-decoration: none; }
+          a:hover { text-decoration: underline; }
+          h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
+          h1 { font-size: 1.5rem; margin: 24px 0 4px; }
+          h2 { font-size: 1.25rem; margin: 20px 0 10px; }
+          h3 { font-size: 1.02rem; margin: 0 0 12px; color: var(--text); display: flex; align-items: center; gap: 6px; }
+          p { color: var(--text-dim); }
+          small { color: var(--text-dim); }
+
+          .topbar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 18px 0; margin-bottom: 8px; border-bottom: 1px solid var(--card-border);
+          }
+          .topbar .brand { font-weight: 700; font-size: 1.1rem; color: var(--text); display: flex; align-items: center; gap: 8px; }
+          .topbar .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+          .topbar a { color: var(--text-dim); font-size: 0.9rem; }
+
+          input, select, textarea {
+            font-size: 15px; padding: 11px 12px; margin: 6px 0; width: 100%;
+            background: #0f151c; color: var(--text); border: 1px solid var(--card-border);
+            border-radius: 10px; transition: border-color 0.15s;
+          }
+          input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+          input::placeholder { color: #55606b; }
+          label { display: block; }
+          label small { display: block; margin-bottom: 2px; font-size: 0.78rem; }
+
+          button {
+            font-size: 15px; padding: 11px 16px; margin: 6px 0; width: 100%;
+            background: var(--accent); color: #04211a; font-weight: 600;
+            cursor: pointer; border: none; border-radius: 10px;
+            transition: background 0.15s, transform 0.1s;
+          }
+          button:hover { background: var(--accent-dark); }
+          button:active { transform: scale(0.98); }
+          button.danger, .danger { background: var(--danger-bg); color: var(--danger); border: 1px solid #5c2323; }
+          button.danger:hover { background: #4a1a1a; }
+          button.secondary { background: #1c2530; color: var(--text); border: 1px solid var(--card-border); }
+          button.secondary:hover { background: #232d3a; }
+
+          .card {
+            background: var(--card); border: 1px solid var(--card-border); border-radius: 14px;
+            padding: 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+          }
+
+          .pill {
+            padding: 3px 11px; border-radius: 20px; font-size: 12px; font-weight: 600;
+            letter-spacing: 0.02em; display: inline-block;
+          }
+          .on { background: var(--success-bg); color: #4ade80; }
+          .off { background: var(--danger-bg); color: #f87171; }
+
+          .row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 11px 0; border-bottom: 1px solid var(--card-border); gap: 10px;
+          }
+          .row:last-child { border-bottom: none; }
+          .row > span:first-child { font-size: 0.93rem; }
+
+          /* Real switch control, replacing the old pill+Toggle-button combo */
+          .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+          .switch input { opacity: 0; width: 0; height: 0; }
+          .switch .slider {
+            position: absolute; cursor: pointer; inset: 0; background: #2a333e;
+            border-radius: 24px; transition: background 0.2s;
+          }
+          .switch .slider::before {
+            content: ""; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px;
+            background: white; border-radius: 50%; transition: transform 0.2s;
+          }
+          .switch input:checked + .slider { background: var(--accent); }
+          .switch input:checked + .slider::before { transform: translateX(20px); }
+
+          .error-box {
+            background: var(--danger-bg); border: 1px solid #5c2323; color: #fca5a5;
+            padding: 10px 14px; border-radius: 10px; font-size: 0.9rem; margin-bottom: 12px;
+          }
         </style>
       </head>
-      <body>${body}</body>
+      <body>
+        <div class="topbar">
+          <div class="brand"><span class="dot"></span>WhatsApp Bot</div>
+          ${title !== 'Register' && title !== 'Login' ? '<a href="/client/logout">Logout</a>' : ''}
+        </div>
+        ${body}
+      </body>
     </html>
   `;
 }
+
+// Small inline script that auto-submits a toggle switch's form the instant
+// it's flipped — no separate "Toggle" button needed, feels like a real
+// settings screen instead of a form you have to remember to submit.
+const TOGGLE_AUTOSUBMIT_JS = `<script>
+  document.querySelectorAll('.switch input').forEach(function(el) {
+    el.addEventListener('change', function() { el.closest('form').submit(); });
+  });
+</script>`;
 
 function createClientRoutes() {
   const router = express.Router();
   router.use(express.urlencoded({ extended: true }));
 
   router.get('/register', (req, res) => {
-    const error = req.query.error ? `<p style="color:#f87171;">${req.query.error}</p>` : '';
+    const error = req.query.error ? `<div class="error-box">${req.query.error}</div>` : '';
     res.send(layout('Register', `
       <h2>Create Your Account</h2>
       ${error}
@@ -99,7 +201,7 @@ function createClientRoutes() {
 
   router.get('/login', (req, res) => {
     if (req.session && req.session.clientBotId) return res.redirect('/client/dashboard');
-    const error = req.query.error ? '<p style="color:#f87171;">Invalid phone number or password.</p>' : '';
+    const error = req.query.error ? '<div class="error-box">Invalid phone number or password.</div>' : '';
     res.send(layout('Login', `
       <h2>Client Login</h2>
       ${error}
@@ -166,10 +268,12 @@ function createClientRoutes() {
     const featureRows = FEATURE_COLUMNS.map((col) => `
       <div class="row">
         <span>${FEATURE_LABELS[col]}</span>
-        <form method="POST" action="/client/settings/toggle" style="width:auto;display:flex;gap:8px;align-items:center;">
+        <form method="POST" action="/client/settings/toggle" style="width:auto;margin:0;">
           <input type="hidden" name="feature" value="${col}" />
-          <span class="pill ${features[col] ? 'on' : 'off'}">${features[col] ? 'ON' : 'OFF'}</span>
-          <button type="submit" style="width:auto;">Toggle</button>
+          <label class="switch">
+            <input type="checkbox" name="enabled" value="1" ${features[col] ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
         </form>
       </div>
     `).join('');
@@ -315,8 +419,7 @@ function createClientRoutes() {
           </div>
         `).join('') : '<p>No status posts tracked yet.</p>'}
       </div>
-
-      <p><a href="/client/logout">Log out</a></p>
+      ${TOGGLE_AUTOSUBMIT_JS}
     `));
   });
 
@@ -366,8 +469,9 @@ function createClientRoutes() {
     const botId = req.session.clientBotId;
     const feature = req.body.feature;
     if (FEATURE_COLUMNS.includes(feature)) {
-      const current = await getFeatures(botId);
-      await setFeature(botId, feature, !current[feature]);
+      // A real checkbox only submits its field when checked — unchecked
+      // simply omits "enabled" from the form body. So presence = on.
+      await setFeature(botId, feature, req.body.enabled === '1');
     }
     res.redirect('/client/dashboard');
   });
