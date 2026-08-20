@@ -27,7 +27,7 @@ const { getRecentCapturesForBot } = require('../db/deletedCaptures');
 const { getStatusSavesForBot } = require('../db/statusSaves');
 const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownStatusPosts');
 const { getPricingSettings, updatePricingSettings } = require('../db/pricingSettings');
-const { getSubscription, isSubscriptionActive, extendSubscriptionByDays } = require('../db/subscriptions');
+const { getSubscription, isSubscriptionActive, extendSubscriptionByYMD, setSubscriptionExpiry } = require('../db/subscriptions');
 const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
 const { refreshScheduler } = require('./scheduler');
@@ -353,21 +353,30 @@ function createAdminRoutes() {
         <p><span class="pill ${subActive ? 'on' : 'off'}">${subActive ? 'ACTIVE' : 'EXPIRED'}</span></p>
         ${subscription ? `
           <p><small>Trial ends: ${new Date(subscription.trial_ends_at).toLocaleString()}</small></p>
-          ${subscription.paid_until ? `<p><small>Paid until: ${new Date(subscription.paid_until).toLocaleString()} (${subscription.plan})</small></p>` : '<p><small>No payments yet.</small></p>'}
+          ${subscription.paid_until ? `<p><small>Paid until: <strong>${new Date(subscription.paid_until).toLocaleString()}</strong> (${subscription.plan})</small></p>` : '<p><small>No payments yet.</small></p>'}
         ` : '<p><small>No subscription record (admin-created bot, not self-registered).</small></p>'}
         <p><small>Recent payments:</small></p>
         ${payments.map((p) => `<div class="row"><span>${p.plan} — KES ${p.amount}</span><span class="pill ${p.status === 'success' ? 'on' : 'off'}">${p.status}</span></div>`).join('') || '<p>None</p>'}
 
-        <p style="margin-top:16px;"><small>Extend access — adds on top of whatever time is already remaining, doesn't reset the clock.</small></p>
-        <form method="POST" action="/admin/bot/${botId}/extend-days" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
-          <button type="submit" name="days" value="7" style="width:auto;">+7 days</button>
-          <button type="submit" name="days" value="30" style="width:auto;">+1 month</button>
-          <button type="submit" name="days" value="365" style="width:auto;">+1 year</button>
-        </form>
-        <form method="POST" action="/admin/bot/${botId}/extend-days" style="display:flex;gap:6px;">
-          <input type="number" name="days" min="1" placeholder="Custom days" required style="flex:1;" />
-          <button type="submit" style="width:auto;">Add</button>
-        </form>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #333;">
+          <p><strong>Extend access</strong></p>
+          <p><small>Adds this much time on top of whatever's already remaining — never resets or shortens the current expiry.</small></p>
+          <form method="POST" action="/admin/bot/${botId}/extend-days" style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;">
+            <label style="flex:1;min-width:70px;"><small>Years</small><input type="number" name="years" min="0" value="0" /></label>
+            <label style="flex:1;min-width:70px;"><small>Months</small><input type="number" name="months" min="0" value="0" /></label>
+            <label style="flex:1;min-width:70px;"><small>Days</small><input type="number" name="days" min="0" value="0" /></label>
+            <button type="submit" style="width:auto;">Extend</button>
+          </form>
+        </div>
+
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #333;">
+          <p><strong>Or set an exact expiry date</strong></p>
+          <p><small>Sets "paid until" directly to this date, instead of extending — use this to correct a mistake or set a precise date.</small></p>
+          <form method="POST" action="/admin/bot/${botId}/set-expiry" style="display:flex;gap:8px;">
+            <input type="date" name="expiry" required style="flex:1;" />
+            <button type="submit" style="width:auto;">Set</button>
+          </form>
+        </div>
       </div>
 
       <div class="card">
@@ -705,9 +714,20 @@ function createAdminRoutes() {
 
   router.post('/bot/:id/extend-days', async (req, res) => {
     const botId = parseInt(req.params.id, 10);
-    const days = parseInt(req.body.days, 10);
-    if (days > 0) {
-      await extendSubscriptionByDays(botId, days);
+    const years = parseInt(req.body.years, 10) || 0;
+    const months = parseInt(req.body.months, 10) || 0;
+    const days = parseInt(req.body.days, 10) || 0;
+    if (years > 0 || months > 0 || days > 0) {
+      await extendSubscriptionByYMD(botId, { years, months, days });
+    }
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/set-expiry', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const expiry = req.body.expiry;
+    if (expiry) {
+      await setSubscriptionExpiry(botId, expiry);
     }
     res.redirect(`/admin/bot/${botId}`);
   });
