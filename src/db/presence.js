@@ -1,31 +1,31 @@
-const { query } = require('./pool');
+const { getDb } = require('./mongo');
 
 async function updatePresence(botId, contactJid, presenceStatus, lastSeenAt) {
-  await query(
-    `INSERT INTO presence_log (bot_id, contact_jid, presence_status, last_seen_at, recorded_at)
-     VALUES ($1, $2, $3, $4, NOW())
-     ON CONFLICT (bot_id, contact_jid) DO UPDATE SET
-       presence_status = $3,
-       last_seen_at = COALESCE($4, presence_log.last_seen_at),
-       recorded_at = NOW()`,
-    [botId, contactJid, presenceStatus, lastSeenAt || null]
+  const db = await getDb();
+  const id = Number(botId);
+  const existing = await db.collection('presence_log').findOne({ bot_id: id, contact_jid: contactJid });
+  await db.collection('presence_log').updateOne(
+    { bot_id: id, contact_jid: contactJid },
+    { $set: {
+        presence_status: presenceStatus,
+        last_seen_at: lastSeenAt || (existing ? existing.last_seen_at : null),
+        recorded_at: new Date(),
+    } },
+    { upsert: true }
   );
 }
 
 async function getPresence(botId, contactJid) {
-  const res = await query(
-    'SELECT * FROM presence_log WHERE bot_id = $1 AND contact_jid = $2',
-    [botId, contactJid]
-  );
-  return res.rows[0] || null;
+  const db = await getDb();
+  return db.collection('presence_log').findOne({ bot_id: Number(botId), contact_jid: contactJid });
 }
 
 async function getAllPresenceForBot(botId) {
-  const res = await query(
-    'SELECT * FROM presence_log WHERE bot_id = $1 ORDER BY recorded_at DESC',
-    [botId]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('presence_log')
+    .find({ bot_id: Number(botId) })
+    .sort({ recorded_at: -1 })
+    .toArray();
 }
 
 module.exports = { updatePresence, getPresence, getAllPresenceForBot };

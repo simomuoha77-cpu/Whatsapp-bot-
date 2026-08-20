@@ -1,4 +1,4 @@
-const { query } = require('./pool');
+const { getDb } = require('./mongo');
 const { getPricingSettings } = require('./pricingSettings');
 
 /**
@@ -7,22 +7,29 @@ const { getPricingSettings } = require('./pricingSettings');
  * registered (linked to a client_account).
  */
 async function startTrial(botId) {
+  const db = await getDb();
+  const id = Number(botId);
+  const existing = await db.collection('subscriptions').findOne({ bot_id: id });
+  if (existing) return existing;
+
   const pricing = await getPricingSettings();
-  const res = await query(
-    `INSERT INTO subscriptions (bot_id, trial_started_at, trial_ends_at)
-     VALUES ($1, NOW(), NOW() + ($2 || ' days')::interval)
-     ON CONFLICT (bot_id) DO NOTHING
-     RETURNING *`,
-    [botId, pricing.trial_days]
-  );
-  if (res.rows[0]) return res.rows[0];
-  const existing = await query('SELECT * FROM subscriptions WHERE bot_id = $1', [botId]);
-  return existing.rows[0] || null;
+  const now = new Date();
+  const trialEndsAt = new Date(now.getTime() + pricing.trial_days * 24 * 60 * 60 * 1000);
+  const doc = {
+    bot_id: id,
+    trial_started_at: now,
+    trial_ends_at: trialEndsAt,
+    paid_until: null,
+    plan: 'monthly',
+    updated_at: now,
+  };
+  await db.collection('subscriptions').insertOne(doc);
+  return doc;
 }
 
 async function getSubscription(botId) {
-  const res = await query('SELECT * FROM subscriptions WHERE bot_id = $1', [botId]);
-  return res.rows[0] || null;
+  const db = await getDb();
+  return db.collection('subscriptions').findOne({ bot_id: Number(botId) });
 }
 
 /**
@@ -45,14 +52,20 @@ async function isSubscriptionActive(botId) {
  * on top of remaining time, rather than resetting the clock.
  */
 async function extendSubscription(botId, plan) {
-  const intervalSql = plan === 'yearly' ? "1 year" : "1 month";
-  await query(
-    `UPDATE subscriptions
-     SET paid_until = GREATEST(COALESCE(paid_until, NOW()), NOW()) + $2::interval,
-         plan = $3,
-         updated_at = NOW()
-     WHERE bot_id = $1`,
-    [botId, intervalSql, plan]
+  const db = await getDb();
+  const id = Number(botId);
+  const sub = await getSubscription(id);
+  const now = new Date();
+  const base = sub && sub.paid_until && new Date(sub.paid_until) > now ? new Date(sub.paid_until) : now;
+  const extended = new Date(base);
+  if (plan === 'yearly') {
+    extended.setFullYear(extended.getFullYear() + 1);
+  } else {
+    extended.setMonth(extended.getMonth() + 1);
+  }
+  await db.collection('subscriptions').updateOne(
+    { bot_id: id },
+    { $set: { paid_until: extended, plan, updated_at: now } }
   );
 }
 

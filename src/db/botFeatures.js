@@ -1,4 +1,4 @@
-const { query } = require('./pool');
+const { getDb } = require('./mongo');
 
 const FEATURE_COLUMNS = [
   'auto_view_status',
@@ -66,50 +66,76 @@ const STEALTH_READ_MODE_LABELS = {
 
 const AI_PROVIDERS = ['groq', 'gemini'];
 
+// Mongo documents don't carry column defaults the way Postgres did — a
+// field simply won't exist until explicitly set. These mirror exactly
+// what schema.sql declared as DEFAULT, merged under whatever's actually
+// stored so real values always win and only genuinely-unset fields fall
+// back here (same effective behavior as Postgres columns added later via
+// ALTER TABLE ADD COLUMN, which existing rows never had a chance to set).
+const DEFAULTS = {
+  auto_reply_message: "Thanks for your message! I'll reply shortly.",
+  commands_enabled: true,
+  stealth_read_mode: 'normal',
+  welcome_message_text: 'Welcome! Thanks for messaging us.',
+  away_message_text: "We're currently away and will respond soon.",
+  ai_provider: 'groq',
+  ai_system_prompt: 'You are a helpful assistant responding to WhatsApp messages. Keep replies concise.',
+  anti_call_message: 'Sorry, calls are not accepted on this number. Please send a text message instead.',
+  auto_bio_texts: 'Available|At work|Do not disturb',
+  anti_ban_mode_enabled: true,
+};
+
 async function getFeatures(botId) {
-  const res = await query('SELECT * FROM bot_features WHERE bot_id = $1', [botId]);
-  if (res.rows[0]) return res.rows[0];
-  const insert = await query(
-    `INSERT INTO bot_features (bot_id) VALUES ($1) ON CONFLICT (bot_id) DO NOTHING RETURNING *`,
-    [botId]
-  );
-  if (insert.rows[0]) return insert.rows[0];
-  const retry = await query('SELECT * FROM bot_features WHERE bot_id = $1', [botId]);
-  return retry.rows[0];
+  const db = await getDb();
+  const id = Number(botId);
+  let doc = await db.collection('bot_features').findOne({ bot_id: id });
+  if (!doc) {
+    doc = { bot_id: id, updated_at: new Date() };
+    await db.collection('bot_features').insertOne(doc);
+  }
+  return { ...DEFAULTS, ...doc };
 }
 
 async function setFeature(botId, feature, enabled) {
   if (!FEATURE_COLUMNS.includes(feature)) {
     throw new Error(`Unknown feature "${feature}"`);
   }
-  await getFeatures(botId); // ensure row exists
-  await query(
-    `UPDATE bot_features SET ${feature} = $1, updated_at = NOW() WHERE bot_id = $2`,
-    [enabled, botId]
+  const db = await getDb();
+  const id = Number(botId);
+  await getFeatures(id); // ensure doc exists
+  await db.collection('bot_features').updateOne(
+    { bot_id: id },
+    { $set: { [feature]: enabled, updated_at: new Date() } }
   );
 }
 
 async function setAutoReplyMessage(botId, message) {
-  await getFeatures(botId);
-  await query(
-    `UPDATE bot_features SET auto_reply_message = $1, updated_at = NOW() WHERE bot_id = $2`,
-    [message, botId]
+  const db = await getDb();
+  const id = Number(botId);
+  await getFeatures(id);
+  await db.collection('bot_features').updateOne(
+    { bot_id: id },
+    { $set: { auto_reply_message: message, updated_at: new Date() } }
   );
 }
 
 async function setWelcomeMessage(botId, message) {
-  await getFeatures(botId);
-  await query(
-    `UPDATE bot_features SET welcome_message_text = $1, updated_at = NOW() WHERE bot_id = $2`,
-    [message, botId]
+  const db = await getDb();
+  const id = Number(botId);
+  await getFeatures(id);
+  await db.collection('bot_features').updateOne(
+    { bot_id: id },
+    { $set: { welcome_message_text: message, updated_at: new Date() } }
   );
 }
 
 async function setAwayMessage(botId, message) {
-  await getFeatures(botId);
-  await query(
-    `UPDATE bot_features SET away_message_text = $1, updated_at = NOW() WHERE bot_id = $2`,
-    [message, botId]
+  const db = await getDb();
+  const id = Number(botId);
+  await getFeatures(id);
+  await db.collection('bot_features').updateOne(
+    { bot_id: id },
+    { $set: { away_message_text: message, updated_at: new Date() } }
   );
 }
 
@@ -117,18 +143,22 @@ async function setAiProvider(botId, provider) {
   if (!AI_PROVIDERS.includes(provider)) {
     throw new Error(`Unknown AI provider "${provider}". Valid: ${AI_PROVIDERS.join(', ')}`);
   }
-  await getFeatures(botId);
-  await query(
-    `UPDATE bot_features SET ai_provider = $1, updated_at = NOW() WHERE bot_id = $2`,
-    [provider, botId]
+  const db = await getDb();
+  const id = Number(botId);
+  await getFeatures(id);
+  await db.collection('bot_features').updateOne(
+    { bot_id: id },
+    { $set: { ai_provider: provider, updated_at: new Date() } }
   );
 }
 
 async function setAiSystemPrompt(botId, prompt) {
-  await getFeatures(botId);
-  await query(
-    `UPDATE bot_features SET ai_system_prompt = $1, updated_at = NOW() WHERE bot_id = $2`,
-    [prompt, botId]
+  const db = await getDb();
+  const id = Number(botId);
+  await getFeatures(id);
+  await db.collection('bot_features').updateOne(
+    { bot_id: id },
+    { $set: { ai_system_prompt: prompt, updated_at: new Date() } }
   );
 }
 
@@ -136,10 +166,12 @@ async function setStealthReadMode(botId, mode) {
   if (!STEALTH_READ_MODES.includes(mode)) {
     throw new Error(`Unknown stealth read mode "${mode}". Valid: ${STEALTH_READ_MODES.join(', ')}`);
   }
-  await getFeatures(botId);
-  await query(
-    `UPDATE bot_features SET stealth_read_mode = $1, updated_at = NOW() WHERE bot_id = $2`,
-    [mode, botId]
+  const db = await getDb();
+  const id = Number(botId);
+  await getFeatures(id);
+  await db.collection('bot_features').updateOne(
+    { bot_id: id },
+    { $set: { stealth_read_mode: mode, updated_at: new Date() } }
   );
 }
 

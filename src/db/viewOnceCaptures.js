@@ -1,4 +1,4 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function logViewOnceCapture({
   botId,
@@ -12,49 +12,51 @@ async function logViewOnceCapture({
   mediaPath,
   caption,
 }) {
-  const res = await query(
-    `INSERT INTO view_once_captures
-      (bot_id, sender_jid, sender_name, sender_number, chat_jid, is_group, group_name, media_type, media_path, caption)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     RETURNING *`,
-    [
-      botId,
-      senderJid,
-      senderName || null,
-      senderNumber || null,
-      chatJid,
-      !!isGroup,
-      groupName || null,
-      mediaType,
-      mediaPath || null,
-      caption || null,
-    ]
-  );
-  return res.rows[0];
+  const db = await getDb();
+  const id = await nextSequence('view_once_captures');
+  const doc = {
+    id,
+    bot_id: Number(botId),
+    sender_jid: senderJid,
+    sender_name: senderName || null,
+    sender_number: senderNumber || null,
+    chat_jid: chatJid,
+    is_group: !!isGroup,
+    group_name: groupName || null,
+    media_type: mediaType,
+    media_path: mediaPath || null,
+    caption: caption || null,
+    captured_at: new Date(),
+  };
+  await db.collection('view_once_captures').insertOne(doc);
+  return doc;
 }
 
 async function getViewOnceCapturesForBot(botId, limit = 50) {
-  const res = await query(
-    'SELECT * FROM view_once_captures WHERE bot_id = $1 ORDER BY captured_at DESC LIMIT $2',
-    [botId, limit]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('view_once_captures')
+    .find({ bot_id: Number(botId) })
+    .sort({ captured_at: -1 })
+    .limit(limit)
+    .toArray();
 }
 
 async function getLatestCaptureForChat(botId, chatJid) {
-  const res = await query(
-    'SELECT * FROM view_once_captures WHERE bot_id = $1 AND chat_jid = $2 ORDER BY captured_at DESC LIMIT 1',
-    [botId, chatJid]
-  );
-  return res.rows[0] || null;
+  const db = await getDb();
+  return db.collection('view_once_captures')
+    .find({ bot_id: Number(botId), chat_jid: chatJid })
+    .sort({ captured_at: -1 })
+    .limit(1)
+    .next();
 }
 
 async function getCapturesForChat(botId, chatJid, limit = 10) {
-  const res = await query(
-    'SELECT * FROM view_once_captures WHERE bot_id = $1 AND chat_jid = $2 ORDER BY captured_at DESC LIMIT $3',
-    [botId, chatJid, limit]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('view_once_captures')
+    .find({ bot_id: Number(botId), chat_jid: chatJid })
+    .sort({ captured_at: -1 })
+    .limit(limit)
+    .toArray();
 }
 
 module.exports = {

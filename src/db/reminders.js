@@ -1,40 +1,58 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function createReminder({ botId, targetJid, message, cronExpression, runAt, notifyAdmin }) {
-  const res = await query(
-    `INSERT INTO reminders (bot_id, target_jid, message, cron_expression, run_at, notify_admin)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [botId, targetJid, message, cronExpression || null, runAt || null, !!notifyAdmin]
-  );
-  return res.rows[0];
+  const db = await getDb();
+  const id = await nextSequence('reminders');
+  const doc = {
+    id,
+    bot_id: Number(botId),
+    target_jid: targetJid,
+    message,
+    cron_expression: cronExpression || null,
+    run_at: runAt || null,
+    notify_admin: !!notifyAdmin,
+    is_active: true,
+    last_run_at: null,
+    created_at: new Date(),
+  };
+  await db.collection('reminders').insertOne(doc);
+  return doc;
 }
 
 async function getActiveRecurringReminders() {
-  const res = await query(`SELECT * FROM reminders WHERE is_active = TRUE AND cron_expression IS NOT NULL`);
-  return res.rows;
+  const db = await getDb();
+  return db.collection('reminders')
+    .find({ is_active: true, cron_expression: { $ne: null } })
+    .toArray();
 }
 
 async function getDueOneOffReminders() {
-  const res = await query(
-    `SELECT * FROM reminders WHERE is_active = TRUE AND run_at IS NOT NULL AND run_at <= NOW() AND last_run_at IS NULL`
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('reminders')
+    .find({
+      is_active: true,
+      run_at: { $ne: null, $lte: new Date() },
+      last_run_at: null,
+    })
+    .toArray();
 }
 
 async function getRemindersForBot(botId) {
-  const res = await query(
-    'SELECT * FROM reminders WHERE bot_id = $1 AND is_active = TRUE ORDER BY created_at DESC',
-    [botId]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('reminders')
+    .find({ bot_id: Number(botId), is_active: true })
+    .sort({ created_at: -1 })
+    .toArray();
 }
 
 async function markReminderRun(id) {
-  await query('UPDATE reminders SET last_run_at = NOW() WHERE id = $1', [id]);
+  const db = await getDb();
+  await db.collection('reminders').updateOne({ id: Number(id) }, { $set: { last_run_at: new Date() } });
 }
 
 async function deactivateReminder(id) {
-  await query('UPDATE reminders SET is_active = FALSE WHERE id = $1', [id]);
+  const db = await getDb();
+  await db.collection('reminders').updateOne({ id: Number(id) }, { $set: { is_active: false } });
 }
 
 module.exports = {

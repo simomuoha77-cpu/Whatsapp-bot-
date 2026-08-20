@@ -12,7 +12,7 @@ async function main() {
   try {
     await runMigrations();
   } catch (err) {
-    logger.error({ err }, 'Failed to run migrations. Check DATABASE_URL. Exiting.');
+    logger.error({ err }, 'Failed to run migrations. Check MONGODB_URI. Exiting.');
     process.exit(1);
   }
 

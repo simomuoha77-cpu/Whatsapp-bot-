@@ -1,33 +1,43 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function createScheduledStatusPost({ botId, cronExpression, caption, mediaPath }) {
-  const res = await query(
-    `INSERT INTO scheduled_status_posts (bot_id, cron_expression, caption, media_path)
-     VALUES ($1, $2, $3, $4) RETURNING *`,
-    [botId, cronExpression, caption || null, mediaPath || null]
-  );
-  return res.rows[0];
+  const db = await getDb();
+  const id = await nextSequence('scheduled_status_posts');
+  const doc = {
+    id,
+    bot_id: Number(botId),
+    cron_expression: cronExpression,
+    caption: caption || null,
+    media_path: mediaPath || null,
+    is_active: true,
+    last_run_at: null,
+    created_at: new Date(),
+  };
+  await db.collection('scheduled_status_posts').insertOne(doc);
+  return doc;
 }
 
 async function getActiveScheduledStatusPosts() {
-  const res = await query('SELECT * FROM scheduled_status_posts WHERE is_active = TRUE');
-  return res.rows;
+  const db = await getDb();
+  return db.collection('scheduled_status_posts').find({ is_active: true }).toArray();
 }
 
 async function getScheduledStatusPostsForBot(botId) {
-  const res = await query(
-    'SELECT * FROM scheduled_status_posts WHERE bot_id = $1 ORDER BY created_at DESC',
-    [botId]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('scheduled_status_posts')
+    .find({ bot_id: Number(botId) })
+    .sort({ created_at: -1 })
+    .toArray();
 }
 
 async function deactivateScheduledStatusPost(id) {
-  await query('UPDATE scheduled_status_posts SET is_active = FALSE WHERE id = $1', [id]);
+  const db = await getDb();
+  await db.collection('scheduled_status_posts').updateOne({ id: Number(id) }, { $set: { is_active: false } });
 }
 
 async function markScheduledStatusPostRun(id) {
-  await query('UPDATE scheduled_status_posts SET last_run_at = NOW() WHERE id = $1', [id]);
+  const db = await getDb();
+  await db.collection('scheduled_status_posts').updateOne({ id: Number(id) }, { $set: { last_run_at: new Date() } });
 }
 
 module.exports = {

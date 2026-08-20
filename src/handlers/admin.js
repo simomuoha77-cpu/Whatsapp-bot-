@@ -777,9 +777,10 @@ function createAdminRoutes() {
     const bot = await getBotById(botId);
     await deleteBotSession(botId);
     const crypto = require('crypto');
-    const { query } = require('../db/pool');
+    const { getDb } = require('../db/mongo');
     const newSlug = crypto.randomBytes(6).toString('hex');
-    await query('UPDATE bots SET slug = $1, status = $2 WHERE id = $3', [newSlug, 'pending', botId]);
+    const db = await getDb();
+    await db.collection('bots').updateOne({ id: Number(botId) }, { $set: { slug: newSlug, status: 'pending' } });
     await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch(() => {});
     res.redirect(`/admin/bot/${botId}`);
   });

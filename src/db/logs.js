@@ -1,18 +1,31 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function logStatusView({ botId, contactJid, statusId, mediaType, mediaPath, caption }) {
-  await query(
-    `INSERT INTO status_log (bot_id, contact_jid, status_id, media_type, media_path, caption)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [botId, contactJid, statusId || null, mediaType || null, mediaPath || null, caption || null]
-  );
+  const db = await getDb();
+  const id = await nextSequence('status_log');
+  await db.collection('status_log').insertOne({
+    id,
+    bot_id: Number(botId),
+    contact_jid: contactJid,
+    status_id: statusId || null,
+    media_type: mediaType || null,
+    media_path: mediaPath || null,
+    caption: caption || null,
+    viewed_at: new Date(),
+  });
 }
 
 async function logCommand(botId, jid, command, args) {
-  await query(
-    `INSERT INTO command_logs (bot_id, jid, command, args) VALUES ($1, $2, $3, $4)`,
-    [botId, jid, command, args || null]
-  );
+  const db = await getDb();
+  const id = await nextSequence('command_logs');
+  await db.collection('command_logs').insertOne({
+    id,
+    bot_id: Number(botId),
+    jid,
+    command,
+    args: args || null,
+    executed_at: new Date(),
+  });
 }
 
 module.exports = { logStatusView, logCommand };

@@ -1,23 +1,29 @@
 const bcrypt = require('bcryptjs');
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function createClientAccount(botId, phoneNumber, plainPassword) {
+  const db = await getDb();
   const hash = await bcrypt.hash(plainPassword, 10);
-  const res = await query(
-    `INSERT INTO client_accounts (bot_id, phone_number, password_hash) VALUES ($1, $2, $3) RETURNING *`,
-    [botId, phoneNumber, hash]
-  );
-  return res.rows[0];
+  const id = await nextSequence('client_accounts');
+  const doc = {
+    id,
+    bot_id: Number(botId),
+    phone_number: phoneNumber,
+    password_hash: hash,
+    created_at: new Date(),
+  };
+  await db.collection('client_accounts').insertOne(doc);
+  return doc;
 }
 
 async function getClientAccountByPhone(phoneNumber) {
-  const res = await query('SELECT * FROM client_accounts WHERE phone_number = $1', [phoneNumber]);
-  return res.rows[0] || null;
+  const db = await getDb();
+  return db.collection('client_accounts').findOne({ phone_number: phoneNumber });
 }
 
 async function getClientAccountByBotId(botId) {
-  const res = await query('SELECT * FROM client_accounts WHERE bot_id = $1', [botId]);
-  return res.rows[0] || null;
+  const db = await getDb();
+  return db.collection('client_accounts').findOne({ bot_id: Number(botId) });
 }
 
 async function verifyClientLogin(phoneNumber, plainPassword) {

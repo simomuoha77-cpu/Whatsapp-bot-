@@ -1,33 +1,51 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function createPaymentRecord({ botId, checkoutRequestId, merchantRequestId, phoneNumber, amount, plan }) {
-  const res = await query(
-    `INSERT INTO payments (bot_id, checkout_request_id, merchant_request_id, phone_number, amount, plan)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [botId, checkoutRequestId, merchantRequestId || null, phoneNumber, amount, plan]
-  );
-  return res.rows[0];
+  const db = await getDb();
+  const id = await nextSequence('payments');
+  const doc = {
+    id,
+    bot_id: Number(botId),
+    checkout_request_id: checkoutRequestId,
+    merchant_request_id: merchantRequestId || null,
+    phone_number: phoneNumber,
+    amount,
+    plan,
+    status: 'pending',
+    mpesa_receipt_number: null,
+    result_desc: null,
+    created_at: new Date(),
+    completed_at: null,
+  };
+  await db.collection('payments').insertOne(doc);
+  return doc;
 }
 
 async function getPaymentByCheckoutId(checkoutRequestId) {
-  const res = await query('SELECT * FROM payments WHERE checkout_request_id = $1', [checkoutRequestId]);
-  return res.rows[0] || null;
+  const db = await getDb();
+  return db.collection('payments').findOne({ checkout_request_id: checkoutRequestId });
 }
 
 async function markPaymentResult(checkoutRequestId, { status, mpesaReceiptNumber, resultDesc }) {
-  await query(
-    `UPDATE payments SET status = $2, mpesa_receipt_number = $3, result_desc = $4, completed_at = NOW()
-     WHERE checkout_request_id = $1`,
-    [checkoutRequestId, status, mpesaReceiptNumber || null, resultDesc || null]
+  const db = await getDb();
+  await db.collection('payments').updateOne(
+    { checkout_request_id: checkoutRequestId },
+    { $set: {
+        status,
+        mpesa_receipt_number: mpesaReceiptNumber || null,
+        result_desc: resultDesc || null,
+        completed_at: new Date(),
+    } }
   );
 }
 
 async function getPaymentsForBot(botId, limit = 20) {
-  const res = await query(
-    'SELECT * FROM payments WHERE bot_id = $1 ORDER BY created_at DESC LIMIT $2',
-    [botId, limit]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('payments')
+    .find({ bot_id: Number(botId) })
+    .sort({ created_at: -1 })
+    .limit(limit)
+    .toArray();
 }
 
 module.exports = {

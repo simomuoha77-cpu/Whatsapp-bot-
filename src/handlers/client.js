@@ -8,7 +8,7 @@ const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
 const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
-const { query } = require('../db/pool');
+const { getDb } = require('../db/mongo');
 const {
   FEATURE_COLUMNS,
   FEATURE_LABELS,
@@ -353,7 +353,8 @@ function createClientRoutes() {
     if (!bot) return res.redirect('/client/dashboard');
     await deleteBotSession(botId);
     const newSlug = crypto.randomBytes(6).toString('hex');
-    await query('UPDATE bots SET slug = $1, status = $2 WHERE id = $3', [newSlug, 'pending', botId]);
+    const db = await getDb();
+    await db.collection('bots').updateOne({ id: Number(botId) }, { $set: { slug: newSlug, status: 'pending' } });
     await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch((err) =>
       logger.error({ err, botId }, 'Failed to restart bot socket on client link regeneration')
     );

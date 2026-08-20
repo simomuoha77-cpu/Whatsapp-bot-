@@ -1,4 +1,4 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 /**
  * Call this right after sock.sendMessage('status@broadcast', ...) succeeds,
@@ -6,36 +6,44 @@ const { query } = require('./pool');
  * incoming view receipts against.
  */
 async function recordOwnStatusPost(botId, messageId, { source = 'manual', caption = null } = {}) {
-  const res = await query(
-    `INSERT INTO own_status_posts (bot_id, message_id, source, caption)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (bot_id, message_id) DO NOTHING
-     RETURNING *`,
-    [botId, messageId, source, caption]
-  );
-  if (res.rows[0]) return res.rows[0];
-  const existing = await query(
-    'SELECT * FROM own_status_posts WHERE bot_id = $1 AND message_id = $2',
-    [botId, messageId]
-  );
-  return existing.rows[0] || null;
+  const db = await getDb();
+  const id = Number(botId);
+  const existing = await db.collection('own_status_posts').findOne({ bot_id: id, message_id: messageId });
+  if (existing) return existing;
+  const postId = await nextSequence('own_status_posts');
+  const doc = {
+    id: postId,
+    bot_id: id,
+    message_id: messageId,
+    source,
+    caption,
+    posted_at: new Date(),
+  };
+  await db.collection('own_status_posts').insertOne(doc);
+  return doc;
 }
 
 async function getStatusPostByMessageId(botId, messageId) {
-  const res = await query(
-    'SELECT * FROM own_status_posts WHERE bot_id = $1 AND message_id = $2',
-    [botId, messageId]
-  );
-  return res.rows[0] || null;
+  const db = await getDb();
+  return db.collection('own_status_posts').findOne({ bot_id: Number(botId), message_id: messageId });
 }
 
 async function recordStatusView(botId, statusPostId, viewerJid, viewerName = null) {
-  await query(
-    `INSERT INTO own_status_views (bot_id, status_post_id, viewer_jid, viewer_name)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (status_post_id, viewer_jid) DO NOTHING`,
-    [botId, statusPostId, viewerJid, viewerName]
-  );
+  const db = await getDb();
+  const existing = await db.collection('own_status_views').findOne({
+    status_post_id: Number(statusPostId),
+    viewer_jid: viewerJid,
+  });
+  if (existing) return;
+  const id = await nextSequence('own_status_views');
+  await db.collection('own_status_views').insertOne({
+    id,
+    bot_id: Number(botId),
+    status_post_id: Number(statusPostId),
+    viewer_jid: viewerJid,
+    viewer_name: viewerName,
+    viewed_at: new Date(),
+  });
 }
 
 /**
@@ -43,19 +51,21 @@ async function recordStatusView(botId, statusPostId, viewerJid, viewerName = nul
  * of viewers (name/jid + when), most recent post first.
  */
 async function getRecentPostsWithViewers(botId, limit = 10) {
-  const posts = await query(
-    `SELECT * FROM own_status_posts WHERE bot_id = $1 ORDER BY posted_at DESC LIMIT $2`,
-    [botId, limit]
-  );
+  const db = await getDb();
+  const posts = await db.collection('own_status_posts')
+    .find({ bot_id: Number(botId) })
+    .sort({ posted_at: -1 })
+    .limit(limit)
+    .toArray();
 
   const results = [];
-  for (const post of posts.rows) {
-    const viewers = await query(
-      `SELECT viewer_jid, viewer_name, viewed_at FROM own_status_views
-       WHERE status_post_id = $1 ORDER BY viewed_at ASC`,
-      [post.id]
-    );
-    results.push({ ...post, viewers: viewers.rows, viewCount: viewers.rows.length });
+  for (const post of posts) {
+    const viewers = await db.collection('own_status_views')
+      .find({ status_post_id: post.id })
+      .sort({ viewed_at: 1 })
+      .project({ viewer_jid: 1, viewer_name: 1, viewed_at: 1, _id: 0 })
+      .toArray();
+    results.push({ ...post, viewers, viewCount: viewers.length });
   }
   return results;
 }

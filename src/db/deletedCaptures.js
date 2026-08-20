@@ -1,4 +1,4 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function cacheMessageForAntiDelete({
   botId,
@@ -14,35 +14,35 @@ async function cacheMessageForAntiDelete({
   mediaPath,
   originalSentAt,
 }) {
-  const res = await query(
-    `INSERT INTO deleted_message_captures
-      (bot_id, source_type, sender_jid, sender_name, sender_number, chat_jid, is_group, group_name, message_type, body, media_path, original_sent_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     RETURNING *`,
-    [
-      botId,
-      sourceType,
-      senderJid,
-      senderName || null,
-      senderNumber || null,
-      chatJid,
-      !!isGroup,
-      groupName || null,
-      messageType,
-      body || null,
-      mediaPath || null,
-      originalSentAt || new Date().toISOString(),
-    ]
-  );
-  return res.rows[0];
+  const db = await getDb();
+  const id = await nextSequence('deleted_message_captures');
+  const doc = {
+    id,
+    bot_id: Number(botId),
+    source_type: sourceType,
+    sender_jid: senderJid,
+    sender_name: senderName || null,
+    sender_number: senderNumber || null,
+    chat_jid: chatJid,
+    is_group: !!isGroup,
+    group_name: groupName || null,
+    message_type: messageType,
+    body: body || null,
+    media_path: mediaPath || null,
+    deleted_at: new Date(),
+    original_sent_at: originalSentAt || new Date().toISOString(),
+  };
+  await db.collection('deleted_message_captures').insertOne(doc);
+  return doc;
 }
 
 async function getRecentCapturesForBot(botId, limit = 50) {
-  const res = await query(
-    'SELECT * FROM deleted_message_captures WHERE bot_id = $1 ORDER BY deleted_at DESC LIMIT $2',
-    [botId, limit]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('deleted_message_captures')
+    .find({ bot_id: Number(botId) })
+    .sort({ deleted_at: -1 })
+    .limit(limit)
+    .toArray();
 }
 
 module.exports = { cacheMessageForAntiDelete, getRecentCapturesForBot };

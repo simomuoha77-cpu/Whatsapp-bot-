@@ -1,23 +1,33 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function logMessage({ botId, jid, messageId, direction, messageType, body, mediaPath }) {
-  await query(
-    `INSERT INTO messages (bot_id, jid, message_id, direction, message_type, body, media_path)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [botId, jid, messageId || null, direction, messageType || 'text', body || null, mediaPath || null]
-  );
+  const db = await getDb();
+  const id = await nextSequence('messages');
+  await db.collection('messages').insertOne({
+    id,
+    bot_id: Number(botId),
+    jid,
+    message_id: messageId || null,
+    direction,
+    message_type: messageType || 'text',
+    body: body || null,
+    media_path: mediaPath || null,
+    created_at: new Date(),
+  });
 }
 
 async function getThreadForContact(botId, jid, limit = 200) {
-  const res = await query(
-    `SELECT * FROM messages WHERE bot_id = $1 AND jid = $2 ORDER BY created_at ASC LIMIT $3`,
-    [botId, jid, limit]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('messages')
+    .find({ bot_id: Number(botId), jid })
+    .sort({ created_at: 1 })
+    .limit(limit)
+    .toArray();
 }
 
 async function deleteThread(botId, jid) {
-  await query(`DELETE FROM messages WHERE bot_id = $1 AND jid = $2`, [botId, jid]);
+  const db = await getDb();
+  await db.collection('messages').deleteMany({ bot_id: Number(botId), jid });
 }
 
 // One row per contact, each carrying its most recent message — exactly
@@ -25,17 +35,21 @@ async function deleteThread(botId, jid) {
 // sorted by that last message's time so the most recently active
 // conversation is first.
 async function getRecentChatsForBot(botId, limit = 100) {
-  const res = await query(
-    `SELECT DISTINCT ON (jid)
-       jid, direction, message_type, body, created_at
-     FROM messages
-     WHERE bot_id = $1
-     ORDER BY jid, created_at DESC`,
-    [botId]
-  );
-  return res.rows
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-    .slice(0, limit);
+  const db = await getDb();
+  return db.collection('messages').aggregate([
+    { $match: { bot_id: Number(botId) } },
+    { $sort: { created_at: -1 } },
+    { $group: {
+        _id: '$jid',
+        jid: { $first: '$jid' },
+        direction: { $first: '$direction' },
+        message_type: { $first: '$message_type' },
+        body: { $first: '$body' },
+        created_at: { $first: '$created_at' },
+    } },
+    { $sort: { created_at: -1 } },
+    { $limit: limit },
+  ]).toArray();
 }
 
 module.exports = { logMessage, getThreadForContact, deleteThread, getRecentChatsForBot };

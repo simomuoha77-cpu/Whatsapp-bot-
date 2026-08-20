@@ -1,31 +1,39 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function addKeywordResponse(botId, keyword, response) {
-  const res = await query(
-    `INSERT INTO keyword_responses (bot_id, keyword, response) VALUES ($1, $2, $3) RETURNING *`,
-    [botId, keyword.toLowerCase().trim(), response]
-  );
-  return res.rows[0];
+  const db = await getDb();
+  const id = await nextSequence('keyword_responses');
+  const doc = {
+    id,
+    bot_id: Number(botId),
+    keyword: keyword.toLowerCase().trim(),
+    response,
+    is_active: true,
+    created_at: new Date(),
+  };
+  await db.collection('keyword_responses').insertOne(doc);
+  return doc;
 }
 
 async function getKeywordResponses(botId) {
-  const res = await query(
-    'SELECT * FROM keyword_responses WHERE bot_id = $1 AND is_active = TRUE ORDER BY created_at ASC',
-    [botId]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('keyword_responses')
+    .find({ bot_id: Number(botId), is_active: true })
+    .sort({ created_at: 1 })
+    .toArray();
 }
 
 async function getAllKeywordResponses(botId) {
-  const res = await query(
-    'SELECT * FROM keyword_responses WHERE bot_id = $1 ORDER BY created_at DESC',
-    [botId]
-  );
-  return res.rows;
+  const db = await getDb();
+  return db.collection('keyword_responses')
+    .find({ bot_id: Number(botId) })
+    .sort({ created_at: -1 })
+    .toArray();
 }
 
 async function deleteKeywordResponse(id) {
-  await query('DELETE FROM keyword_responses WHERE id = $1', [id]);
+  const db = await getDb();
+  await db.collection('keyword_responses').deleteOne({ id: Number(id) });
 }
 
 /**

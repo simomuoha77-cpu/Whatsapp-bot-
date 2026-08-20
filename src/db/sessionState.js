@@ -1,16 +1,17 @@
-const { query } = require('./pool');
+const { getDb } = require('./mongo');
 
 async function getState(botId, jid) {
-  const res = await query('SELECT * FROM sessions_state WHERE bot_id = $1 AND jid = $2', [botId, jid]);
-  return res.rows[0] || { bot_id: botId, jid, state: 'idle', context: {} };
+  const db = await getDb();
+  const doc = await db.collection('sessions_state').findOne({ bot_id: Number(botId), jid });
+  return doc || { bot_id: Number(botId), jid, state: 'idle', context: {} };
 }
 
 async function setState(botId, jid, state, context = {}) {
-  await query(
-    `INSERT INTO sessions_state (bot_id, jid, state, context, updated_at)
-     VALUES ($1, $2, $3, $4, NOW())
-     ON CONFLICT (bot_id, jid) DO UPDATE SET state = $3, context = $4, updated_at = NOW()`,
-    [botId, jid, state, JSON.stringify(context)]
+  const db = await getDb();
+  await db.collection('sessions_state').updateOne(
+    { bot_id: Number(botId), jid },
+    { $set: { state, context, updated_at: new Date() } },
+    { upsert: true }
   );
 }
 

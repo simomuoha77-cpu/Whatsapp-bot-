@@ -1,20 +1,32 @@
-const { query } = require('./pool');
+const { getDb, nextSequence } = require('./mongo');
 
 async function getPricingSettings() {
-  const res = await query('SELECT * FROM pricing_settings ORDER BY id ASC LIMIT 1');
-  if (res.rows[0]) return res.rows[0];
-  const insert = await query(
-    `INSERT INTO pricing_settings (monthly_price, yearly_price, trial_days)
-     VALUES (500, 5000, 5) RETURNING *`
-  );
-  return insert.rows[0];
+  const db = await getDb();
+  let doc = await db.collection('pricing_settings').find({}).sort({ id: 1 }).limit(1).next();
+  if (doc) return doc;
+  const id = await nextSequence('pricing_settings');
+  doc = {
+    id,
+    monthly_price: 500,
+    yearly_price: 5000,
+    trial_days: 5,
+    updated_at: new Date(),
+  };
+  await db.collection('pricing_settings').insertOne(doc);
+  return doc;
 }
 
 async function updatePricingSettings({ monthlyPrice, yearlyPrice, trialDays }) {
+  const db = await getDb();
   const current = await getPricingSettings();
-  await query(
-    `UPDATE pricing_settings SET monthly_price = $1, yearly_price = $2, trial_days = $3, updated_at = NOW() WHERE id = $4`,
-    [monthlyPrice, yearlyPrice, trialDays, current.id]
+  await db.collection('pricing_settings').updateOne(
+    { id: current.id },
+    { $set: {
+        monthly_price: monthlyPrice,
+        yearly_price: yearlyPrice,
+        trial_days: trialDays,
+        updated_at: new Date(),
+    } }
   );
 }
 

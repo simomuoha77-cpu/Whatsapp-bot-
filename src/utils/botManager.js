@@ -9,8 +9,8 @@ const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const NodeCache = require('node-cache');
 const logger = require('./logger');
-const { query } = require('../db/pool');
-const { usePostgresAuthState, clearPostgresAuthState } = require('./postgresAuthState');
+const { getDb } = require('../db/mongo');
+const { useMongoAuthState, clearMongoAuthState } = require('./mongoAuthState');
 
 const baileysLogger = pino({ level: 'silent' });
 
@@ -29,15 +29,11 @@ function getAllBotStates() {
 }
 
 async function updateBotStatusInDb(botId, status, extra = {}) {
-  const fields = ['status = $2'];
-  const values = [botId, status];
-  let i = 3;
-  for (const [key, val] of Object.entries(extra)) {
-    fields.push(`${key} = $${i}`);
-    values.push(val);
-    i++;
-  }
-  await query(`UPDATE bots SET ${fields.join(', ')} WHERE id = $1`, values);
+  const db = await getDb();
+  await db.collection('bots').updateOne(
+    { id: Number(botId) },
+    { $set: { status, ...extra } }
+  );
 }
 
 /**
@@ -47,7 +43,7 @@ async function updateBotStatusInDb(botId, status, extra = {}) {
  * free tier, which wipes the filesystem but persists database data.
  */
 async function startBotSocket(botId, slug, onReady) {
-  const { state, saveCreds } = await usePostgresAuthState(botId);
+  const { state, saveCreds } = await useMongoAuthState(botId);
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -225,7 +221,7 @@ async function startBotSocket(botId, slug, onReady) {
       if (loggedOut) {
         logger.warn({ botId }, 'Bot logged out — needs a new QR/pairing code to reconnect.');
         activeBots.delete(botId);
-        await clearPostgresAuthState(botId);
+        await clearMongoAuthState(botId);
       } else {
         entry.reconnectAttempts = (entry.reconnectAttempts || 0) + 1;
 
@@ -290,7 +286,8 @@ function requestPairingCodeForBot(botId, phoneNumber) {
  * automatically without needing to rescan anything.
  */
 async function startAllBots(onReady) {
-  const result = await query('SELECT id, slug, status FROM bots');
+  const db = await getDb();
+  const bots = await db.collection('bots').find({}).project({ id: 1, slug: 1, status: 1 }).toArray();
   // Starting every bot's WebSocket at the exact same instant is what was
   // causing the mass "statusCode 408" disconnect storms — the server
   // can't establish/sync that many sessions simultaneously, so they time
@@ -298,19 +295,19 @@ async function startAllBots(onReady) {
   // per bot spreads the load out so each connection actually has a chance
   // to establish before the next one starts.
   const STAGGER_MS = parseInt(process.env.BOT_STARTUP_STAGGER_MS || '3500', 10);
-  result.rows.forEach((bot, index) => {
+  bots.forEach((bot, index) => {
     setTimeout(() => {
       startBotSocket(bot.id, bot.slug, onReady).catch((err) =>
         logger.error({ err, botId: bot.id }, 'Failed to start bot socket on startup')
       );
     }, index * STAGGER_MS);
   });
-  logger.info({ count: result.rows.length, staggerMs: STAGGER_MS }, 'Scheduled staggered startup for all existing bots');
+  logger.info({ count: bots.length, staggerMs: STAGGER_MS }, 'Scheduled staggered startup for all existing bots');
 }
 
 async function deleteBotSession(botId) {
   activeBots.delete(botId);
-  await clearPostgresAuthState(botId);
+  await clearMongoAuthState(botId);
 }
 
 module.exports = {
