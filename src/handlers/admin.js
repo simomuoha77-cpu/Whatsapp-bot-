@@ -27,7 +27,7 @@ const { getRecentCapturesForBot } = require('../db/deletedCaptures');
 const { getStatusSavesForBot } = require('../db/statusSaves');
 const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownStatusPosts');
 const { getPricingSettings, updatePricingSettings } = require('../db/pricingSettings');
-const { getSubscription, isSubscriptionActive } = require('../db/subscriptions');
+const { getSubscription, isSubscriptionActive, extendSubscriptionByDays } = require('../db/subscriptions');
 const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
 const { refreshScheduler } = require('./scheduler');
@@ -357,6 +357,17 @@ function createAdminRoutes() {
         ` : '<p><small>No subscription record (admin-created bot, not self-registered).</small></p>'}
         <p><small>Recent payments:</small></p>
         ${payments.map((p) => `<div class="row"><span>${p.plan} — KES ${p.amount}</span><span class="pill ${p.status === 'success' ? 'on' : 'off'}">${p.status}</span></div>`).join('') || '<p>None</p>'}
+
+        <p style="margin-top:16px;"><small>Extend access — adds on top of whatever time is already remaining, doesn't reset the clock.</small></p>
+        <form method="POST" action="/admin/bot/${botId}/extend-days" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+          <button type="submit" name="days" value="7" style="width:auto;">+7 days</button>
+          <button type="submit" name="days" value="30" style="width:auto;">+1 month</button>
+          <button type="submit" name="days" value="365" style="width:auto;">+1 year</button>
+        </form>
+        <form method="POST" action="/admin/bot/${botId}/extend-days" style="display:flex;gap:6px;">
+          <input type="number" name="days" min="1" placeholder="Custom days" required style="flex:1;" />
+          <button type="submit" style="width:auto;">Add</button>
+        </form>
       </div>
 
       <div class="card">
@@ -688,6 +699,15 @@ function createAdminRoutes() {
     const name = (req.body.name || '').trim();
     if (phone) {
       await manuallyAddContact(botId, phone, name || null);
+    }
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/extend-days', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const days = parseInt(req.body.days, 10);
+    if (days > 0) {
+      await extendSubscriptionByDays(botId, days);
     }
     res.redirect(`/admin/bot/${botId}`);
   });

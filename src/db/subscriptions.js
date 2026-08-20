@@ -69,9 +69,40 @@ async function extendSubscription(botId, plan) {
   );
 }
 
+/**
+ * Manually extends (or creates) a bot's paid access by a given number of
+ * days — for admin use (comps, manual top-ups, support gestures), separate
+ * from the M-Pesa payment flow. Adds on top of whatever time is already
+ * remaining (paid_until or trial_ends_at, whichever is later and still in
+ * the future), rather than resetting the clock. Works even for
+ * admin-created bots that never had a subscription record at all.
+ */
+async function extendSubscriptionByDays(botId, days) {
+  const db = await getDb();
+  const id = Number(botId);
+  const sub = await getSubscription(id);
+  const now = new Date();
+
+  const candidates = [now];
+  if (sub?.paid_until) candidates.push(new Date(sub.paid_until));
+  if (sub?.trial_ends_at) candidates.push(new Date(sub.trial_ends_at));
+  const base = candidates.reduce((latest, d) => (d > latest ? d : latest), now);
+
+  const extended = new Date(base.getTime() + Number(days) * 24 * 60 * 60 * 1000);
+
+  await db.collection('subscriptions').updateOne(
+    { bot_id: id },
+    { $set: { paid_until: extended, updated_at: now },
+      $setOnInsert: { bot_id: id, trial_started_at: now, trial_ends_at: now, plan: sub?.plan || 'monthly' } },
+    { upsert: true }
+  );
+  return extended;
+}
+
 module.exports = {
   startTrial,
   getSubscription,
   isSubscriptionActive,
   extendSubscription,
+  extendSubscriptionByDays,
 };
