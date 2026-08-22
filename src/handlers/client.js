@@ -28,6 +28,7 @@ const {
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
 const { getRecentPostsWithViewers, recordOwnStatusPost } = require('../db/ownStatusPosts');
 const { getProductsForBot, addProduct, deleteProduct } = require('../db/products');
+const { getOrdersForBot, getOrderById, setOrderStatus } = require('../db/orders');
 const { getMessageStatsForBot } = require('../db/messages');
 const { countAiReplies } = require('../db/aiChatHistory');
 const { countActiveContacts } = require('../db/contacts');
@@ -295,6 +296,8 @@ function createClientRoutes() {
     const aiReplyCount = await countAiReplies(botId, sevenDaysAgo);
     const activeContactCount = await countActiveContacts(botId, sevenDaysAgo);
     const products = await getProductsForBot(botId);
+    const recentOrders = await getOrdersForBot(botId, 100);
+    const pendingOrderCount = recentOrders.filter((o) => o.status === 'pending').length;
 
     // Referral info.
     const clientAccount = await getClientAccountByBotId(botId);
@@ -423,6 +426,12 @@ function createClientRoutes() {
           <input name="message" value="${(features.welcome_message_text || '').replace(/"/g, '&quot;')}" />
           <button type="submit">Save</button>
         </form>
+      </div>
+
+      <div class="card">
+        <h3>📦 Orders</h3>
+        <p><span class="pill ${pendingOrderCount > 0 ? 'off' : 'on'}">${pendingOrderCount} pending</span> <small>${recentOrders.length} total</small></p>
+        <a href="/client/orders" style="display:inline-block;background:#00a884;color:white;text-decoration:none;padding:8px 14px;border-radius:6px;">View all orders</a>
       </div>
 
       <div class="card">
@@ -709,6 +718,80 @@ function createClientRoutes() {
     await setTextField(botId, 'payment_phone_number', req.body.phone_number || '');
     await setTextField(botId, 'payment_notes', req.body.notes || '');
     res.redirect('/client/dashboard');
+  });
+
+  const ORDER_STATUSES = ['pending', 'confirmed', 'paid', 'out_for_delivery', 'completed', 'cancelled'];
+  const ORDER_STATUS_LABELS = {
+    pending: 'Pending',
+    confirmed: 'Confirmed',
+    paid: 'Paid',
+    out_for_delivery: 'Out for delivery',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+  };
+  // What the customer gets told on WhatsApp when the owner updates their
+  // order — not every status change needs a message (e.g. no need to
+  // notify on "pending", since that's already what they saw right after
+  // ordering).
+  const ORDER_STATUS_CUSTOMER_MESSAGE = {
+    confirmed: (o) => `✅ Your order for *${o.product_name}* has been confirmed!`,
+    paid: (o) => `💳 Payment received for your order (*${o.product_name}*). Thank you!`,
+    out_for_delivery: (o) => `🚚 Your order (*${o.product_name}*) is out for delivery.`,
+    completed: (o) => `🎉 Your order (*${o.product_name}*) is complete. Thanks for your business!`,
+    cancelled: (o) => `❌ Your order for *${o.product_name}* has been cancelled. Message us if you have questions.`,
+  };
+
+  router.get('/orders', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const orders = await getOrdersForBot(botId, 100);
+
+    const rows = orders.map((o) => `
+      <div class="card">
+        <div class="row">
+          <strong>${o.product_name}${o.price ? ` — KES ${o.price}` : ''}</strong>
+          <span class="pill ${o.status === 'completed' ? 'on' : o.status === 'cancelled' ? 'off' : ''}">${ORDER_STATUS_LABELS[o.status] || o.status}</span>
+        </div>
+        <p><small>From: ${o.customer_jid.split('@')[0]} · Phone: ${o.phone}<br/>Address: ${o.address}<br/>Placed: ${new Date(o.created_at).toLocaleString()}</small></p>
+        <form method="POST" action="/client/orders/${o.id}/status" style="display:flex;gap:8px;">
+          <select name="status" style="flex:1;">
+            ${ORDER_STATUSES.map((s) => `<option value="${s}" ${o.status === s ? 'selected' : ''}>${ORDER_STATUS_LABELS[s]}</option>`).join('')}
+          </select>
+          <button type="submit" style="width:auto;">Update</button>
+        </form>
+      </div>
+    `).join('') || '<p>No orders yet.</p>';
+
+    res.send(layout('Orders', `
+      <h2>Orders</h2>
+      <p><a href="/client/dashboard">&larr; Back to dashboard</a></p>
+      ${rows}
+    `));
+  });
+
+  router.post('/orders/:id/status', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const orderId = req.params.id;
+    const status = req.body.status;
+
+    if (ORDER_STATUSES.includes(status)) {
+      await setOrderStatus(botId, orderId, status);
+
+      // Notify the customer, if the bot is currently connected and this
+      // status change has a message worth sending.
+      const messageFn = ORDER_STATUS_CUSTOMER_MESSAGE[status];
+      if (messageFn) {
+        try {
+          const order = await getOrderById(botId, orderId);
+          const live = getBotState(botId);
+          if (order && live && live.sock && live.status === 'connected') {
+            await live.sock.sendMessage(order.customer_jid, { text: messageFn(order) });
+          }
+        } catch (err) {
+          logger.warn({ err, botId, orderId }, 'Failed to notify customer of order status change');
+        }
+      }
+    }
+    res.redirect('/client/orders');
   });
 
   router.post('/settings/away-message', async (req, res) => {

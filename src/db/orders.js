@@ -28,6 +28,11 @@ async function getOrdersForBot(botId, limit = 50) {
     .toArray();
 }
 
+async function getOrderById(botId, orderId) {
+  const db = await getDb();
+  return db.collection('orders').findOne({ bot_id: Number(botId), id: Number(orderId) });
+}
+
 async function setOrderStatus(botId, orderId, status) {
   const db = await getDb();
   await db.collection('orders').updateOne(
@@ -36,4 +41,4 @@ async function setOrderStatus(botId, orderId, status) {
   );
 }
 
-module.exports = { createOrder, getOrdersForBot, setOrderStatus };
+module.exports = { createOrder, getOrdersForBot, getOrderById, setOrderStatus };
