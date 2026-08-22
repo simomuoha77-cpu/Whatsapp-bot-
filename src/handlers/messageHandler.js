@@ -6,6 +6,7 @@ const { logCommand } = require('../db/logs');
 const { getState } = require('../db/sessionState');
 const { handleStatefulFlow } = require('../commands/order');
 const { handleInteractiveReply } = require('../commands/interactive');
+const { getProductsForBot } = require('../db/products');
 const { getFeatures } = require('../db/botFeatures');
 const { handlePotentialViewOnce } = require('./antiViewOnce');
 const { getLatestCaptureForChat, getCapturesForChat } = require('../db/viewOnceCaptures');
@@ -460,9 +461,29 @@ function registerMessageHandler(sock, botId) {
           if (features.ai_chat_enabled) {
             try {
               const history = await getRecentHistory(botId, sender, 10);
+
+              // Give the AI real, current context about this specific bot
+              // — its actual commands and product catalog — so it can
+              // naturally say "type !order to see our menu" or recognize
+              // a product by name, instead of only knowing whatever the
+              // owner manually wrote in their system prompt.
+              const commandList = [...commands.getAll().entries()]
+                .map(([name, def]) => `${PREFIX}${name} — ${def.description || ''}`)
+                .join('\n');
+              const products = await getProductsForBot(botId);
+              const productList = products.length
+                ? products.map((p) => `${p.name}${p.price ? ` (KES ${p.price})` : ''}`).join(', ')
+                : null;
+
+              const basePrompt = features.ai_system_prompt || 'You are a helpful assistant responding to WhatsApp messages. Keep replies concise.';
+              const systemPrompt =
+                `${basePrompt}\n\n` +
+                `Available commands on this bot (mention the relevant one when it fits, e.g. suggest ${PREFIX}order if someone wants to buy something):\n${commandList}` +
+                (productList ? `\n\nCurrent products for sale: ${productList}` : '');
+
               const aiReply = await generateAiReply({
                 provider: features.ai_provider || 'groq',
-                systemPrompt: features.ai_system_prompt || 'You are a helpful assistant responding to WhatsApp messages. Keep replies concise.',
+                systemPrompt,
                 history,
                 userMessage: text,
                 botId,

@@ -2,7 +2,56 @@ const { setState, clearState } = require('../db/sessionState');
 const { getProductsForBot, getProductById } = require('../db/products');
 const { createOrder } = require('../db/orders');
 const { getFeatures } = require('../db/botFeatures');
+const { generateAiReply } = require('../utils/aiProvider');
 const logger = require('../utils/logger');
+
+/**
+ * Tries to figure out which product the customer meant, in order of
+ * cheapest/most-certain to most-expensive/least-certain:
+ *   1. A plain number matching the menu position (the expected path).
+ *   2. A substring/word match against product names — catches "I want the
+ *      bag" or just "bag" instead of "1", with zero cost or latency.
+ *   3. If neither works and this bot has AI Chat enabled, ask the AI to
+ *      pick the closest product from the exact list — catches typos,
+ *      descriptions, or indirect phrasing ("the blue one", "school bag").
+ * Returns the matched product, or null if nothing reasonably matches —
+ * callers should fall back to asking again rather than guessing further.
+ */
+async function matchProduct(botId, products, text) {
+  const trimmed = text.trim();
+
+  const index = parseInt(trimmed, 10) - 1;
+  if (products[index]) return products[index];
+
+  const lower = trimmed.toLowerCase();
+  const substringMatches = products.filter(
+    (p) => lower.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(lower)
+  );
+  if (substringMatches.length === 1) return substringMatches[0];
+
+  const features = await getFeatures(botId);
+  if (!features.ai_chat_enabled) return null;
+
+  try {
+    const productList = products.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+    const aiReply = await generateAiReply({
+      provider: features.ai_provider,
+      systemPrompt:
+        `You are matching a customer's message to a product from this exact list:\n${productList}\n\n` +
+        `Reply with ONLY the number of the best-matching product, or the word NONE if nothing in the list ` +
+        `reasonably matches what they said. Do not explain, just the number or NONE.`,
+      history: [],
+      userMessage: trimmed,
+      botId,
+    });
+    if (!aiReply) return null;
+    const aiIndex = parseInt(aiReply.trim(), 10) - 1;
+    return products[aiIndex] || null;
+  } catch (err) {
+    logger.warn({ err, botId }, 'AI product matching failed');
+    return null;
+  }
+}
 
 /**
  * Builds a human-readable payment instructions block from whatever the
@@ -53,10 +102,9 @@ async function handleStatefulFlow({ botId, state, text, reply, sender, sock }) {
 
   if (state.state === 'awaiting_order_choice') {
     const products = state.context.products || [];
-    const index = parseInt(text.trim(), 10) - 1;
-    const product = products[index];
+    const product = await matchProduct(botId, products, text);
     if (!product) {
-      await reply('Please reply with a valid item number from the list, or type !cancel.');
+      await reply("Sorry, I couldn't tell which item you meant. Please reply with the item *number* from the list above, or type !menu to see everything I can help with.");
       return true;
     }
     await setState(botId, sender, 'awaiting_order_address', { product });
