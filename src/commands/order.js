@@ -21,16 +21,16 @@ async function matchProduct(botId, products, text) {
   const trimmed = text.trim();
 
   const index = parseInt(trimmed, 10) - 1;
-  if (products[index]) return products[index];
+  if (products[index]) return { product: products[index], aiUsed: false };
 
   const lower = trimmed.toLowerCase();
   const substringMatches = products.filter(
     (p) => lower.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(lower)
   );
-  if (substringMatches.length === 1) return substringMatches[0];
+  if (substringMatches.length === 1) return { product: substringMatches[0], aiUsed: false };
 
   const features = await getFeatures(botId);
-  if (!features.ai_chat_enabled) return null;
+  if (!features.ai_chat_enabled) return { product: null, aiUsed: false };
 
   try {
     const productList = products.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
@@ -44,11 +44,38 @@ async function matchProduct(botId, products, text) {
       userMessage: trimmed,
       botId,
     });
-    if (!aiReply) return null;
+    if (!aiReply) return { product: null, aiUsed: true };
     const aiIndex = parseInt(aiReply.trim(), 10) - 1;
-    return products[aiIndex] || null;
+    return { product: products[aiIndex] || null, aiUsed: true };
   } catch (err) {
     logger.warn({ err, botId }, 'AI product matching failed');
+    return { product: null, aiUsed: true };
+  }
+}
+
+/**
+ * When AI genuinely looked at the message and still couldn't match a
+ * product, generate a natural, contextual clarifying reply instead of
+ * showing the exact same canned string every time — this is what makes
+ * "AI is helping" actually visible, rather than an invisible NONE that
+ * falls back to identical static text whether AI ran or not.
+ */
+async function generateClarification(botId, products, text, features) {
+  try {
+    const productList = products.map((p, i) => `${i + 1}. ${p.name}${p.price ? ` (KES ${p.price})` : ''}`).join('\n');
+    const aiReply = await generateAiReply({
+      provider: features.ai_provider,
+      systemPrompt:
+        `You are a friendly shop assistant on WhatsApp. The customer is picking an item from this menu:\n${productList}\n\n` +
+        `Their message didn't clearly match any item. Write a short, warm reply (1-2 sentences) that ` +
+        `acknowledges what they said and asks them to reply with the item number. Keep it natural, not robotic.`,
+      history: [],
+      userMessage: text,
+      botId,
+    });
+    return aiReply || null;
+  } catch (err) {
+    logger.warn({ err, botId }, 'AI clarification generation failed');
     return null;
   }
 }
@@ -102,8 +129,16 @@ async function handleStatefulFlow({ botId, state, text, reply, sender, sock }) {
 
   if (state.state === 'awaiting_order_choice') {
     const products = state.context.products || [];
-    const product = await matchProduct(botId, products, text);
+    const { product, aiUsed } = await matchProduct(botId, products, text);
     if (!product) {
+      if (aiUsed) {
+        const features = await getFeatures(botId);
+        const clarification = await generateClarification(botId, products, text, features);
+        if (clarification) {
+          await reply(clarification);
+          return true;
+        }
+      }
       await reply("Sorry, I couldn't tell which item you meant. Please reply with the item *number* from the list above, or type !menu to see everything I can help with.");
       return true;
     }
