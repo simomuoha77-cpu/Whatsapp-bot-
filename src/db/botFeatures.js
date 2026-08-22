@@ -99,6 +99,7 @@ const DEFAULTS = {
   business_hours_end: '18:00',
   business_hours_timezone: 'Africa/Nairobi',
   business_hours_away_text: "We're currently outside business hours. We'll respond when we're back.",
+  payment_method_type: 'none',
 };
 
 async function getFeatures(botId) {
@@ -198,6 +199,12 @@ const TEXT_FIELDS = [
   'business_hours_end',
   'business_hours_timezone',
   'business_hours_away_text',
+  'payment_method_type',
+  'payment_till_number',
+  'payment_paybill_number',
+  'payment_paybill_account',
+  'payment_phone_number',
+  'payment_notes',
 ];
 
 async function setTextField(botId, field, value) {

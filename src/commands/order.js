@@ -1,7 +1,32 @@
 const { setState, clearState } = require('../db/sessionState');
 const { getProductsForBot, getProductById } = require('../db/products');
 const { createOrder } = require('../db/orders');
+const { getFeatures } = require('../db/botFeatures');
 const logger = require('../utils/logger');
+
+/**
+ * Builds a human-readable payment instructions block from whatever the
+ * bot owner configured on their dashboard. Returns '' if they haven't set
+ * up a payment method — in that case the order flow just skips this
+ * section entirely rather than showing empty/broken instructions.
+ */
+function buildPaymentInstructions(features) {
+  const type = features.payment_method_type;
+  const lines = [];
+  if (type === 'till' && features.payment_till_number) {
+    lines.push(`💳 *Pay via M-Pesa Till*\nTill Number: *${features.payment_till_number}*`);
+  } else if (type === 'paybill' && features.payment_paybill_number) {
+    lines.push(
+      `💳 *Pay via M-Pesa Paybill*\nPaybill: *${features.payment_paybill_number}*` +
+      (features.payment_paybill_account ? `\nAccount: *${features.payment_paybill_account}*` : '')
+    );
+  } else if (type === 'phone' && features.payment_phone_number) {
+    lines.push(`💳 *Pay via M-Pesa Send Money*\nPhone: *${features.payment_phone_number}*`);
+  }
+  if (lines.length === 0) return '';
+  if (features.payment_notes) lines.push(features.payment_notes);
+  return lines.join('\n');
+}
 
 async function notifyOwnerOfOrder(sock, order) {
   try {
@@ -60,11 +85,15 @@ async function handleStatefulFlow({ botId, state, text, reply, sender, sock }) {
       phone,
     });
 
+    const features = await getFeatures(botId);
+    const paymentBlock = buildPaymentInstructions(features);
+
     await reply(
       `✅ Order placed!\n\n` +
       `Item: ${product.name}${product.price ? ` (KES ${product.price})` : ''}\n` +
       `Address: ${address}\n` +
       `Phone: ${phone}\n\n` +
+      (paymentBlock ? `${paymentBlock}\n\n` : '') +
       `We'll be in touch shortly to confirm. Type !menu for other commands.`
     );
 

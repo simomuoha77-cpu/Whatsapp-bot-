@@ -444,6 +444,25 @@ function createClientRoutes() {
       </div>
 
       <div class="card">
+        <h3>💳 Payment Method</h3>
+        <p><small>Shown to customers automatically after they place an order via !order, so they know how to pay. Nothing is charged automatically — payment is arranged directly between you and the customer.</small></p>
+        <form method="POST" action="/client/settings/payment-method">
+          <select name="type">
+            <option value="none" ${features.payment_method_type === 'none' || !features.payment_method_type ? 'selected' : ''}>Not set</option>
+            <option value="till" ${features.payment_method_type === 'till' ? 'selected' : ''}>M-Pesa Till Number</option>
+            <option value="paybill" ${features.payment_method_type === 'paybill' ? 'selected' : ''}>M-Pesa Paybill</option>
+            <option value="phone" ${features.payment_method_type === 'phone' ? 'selected' : ''}>M-Pesa Send Money (phone)</option>
+          </select>
+          <input name="till_number" placeholder="Till number" value="${(features.payment_till_number || '').replace(/"/g, '&quot;')}" />
+          <input name="paybill_number" placeholder="Paybill number" value="${(features.payment_paybill_number || '').replace(/"/g, '&quot;')}" />
+          <input name="paybill_account" placeholder="Paybill account/reference" value="${(features.payment_paybill_account || '').replace(/"/g, '&quot;')}" />
+          <input name="phone_number" placeholder="Phone number (for Send Money)" value="${(features.payment_phone_number || '').replace(/"/g, '&quot;')}" />
+          <input name="notes" placeholder="Optional note (e.g. 'send confirmation screenshot')" value="${(features.payment_notes || '').replace(/"/g, '&quot;')}" />
+          <button type="submit">Save payment method</button>
+        </form>
+      </div>
+
+      <div class="card">
         <h3>👥 Group Settings</h3>
         <p><small>Applies in any group this bot is a member of.</small></p>
         <div class="row">
@@ -678,6 +697,17 @@ function createClientRoutes() {
     if (req.body.start) await setTextField(botId, 'business_hours_start', req.body.start);
     if (req.body.end) await setTextField(botId, 'business_hours_end', req.body.end);
     if (req.body.timezone) await setTextField(botId, 'business_hours_timezone', req.body.timezone);
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/payment-method', async (req, res) => {
+    const botId = req.session.clientBotId;
+    await setTextField(botId, 'payment_method_type', req.body.type || 'none');
+    await setTextField(botId, 'payment_till_number', req.body.till_number || '');
+    await setTextField(botId, 'payment_paybill_number', req.body.paybill_number || '');
+    await setTextField(botId, 'payment_paybill_account', req.body.paybill_account || '');
+    await setTextField(botId, 'payment_phone_number', req.body.phone_number || '');
+    await setTextField(botId, 'payment_notes', req.body.notes || '');
     res.redirect('/client/dashboard');
   });
 

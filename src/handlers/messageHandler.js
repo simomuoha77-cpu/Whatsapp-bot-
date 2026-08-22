@@ -533,7 +533,7 @@ function registerMessageHandler(sock, botId) {
           continue;
         }
 
-        await reply(`I didn't understand that. Type *${PREFIX}menu* to see what I can do.`);
+        await reply(`Type *${PREFIX}menu* to see more.`);
       } catch (err) {
         logger.error({ err, botId }, 'Error handling incoming message');
       }
