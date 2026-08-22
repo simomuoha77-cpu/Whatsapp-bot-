@@ -24,4 +24,13 @@ async function getRecentHistory(botId, contactJid, limit = 10) {
   return rows.reverse(); // oldest first, for sending to the AI in order
 }
 
-module.exports = { addChatMessage, getRecentHistory };
+async function countAiReplies(botId, sinceDate) {
+  const db = await getDb();
+  return db.collection('ai_chat_history').countDocuments({
+    bot_id: Number(botId),
+    role: 'assistant',
+    created_at: { $gte: sinceDate },
+  });
+}
+
+module.exports = { addChatMessage, getRecentHistory, countAiReplies };

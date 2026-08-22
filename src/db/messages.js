@@ -52,4 +52,20 @@ async function getRecentChatsForBot(botId, limit = 100) {
   ]).toArray();
 }
 
-module.exports = { logMessage, getThreadForContact, deleteThread, getRecentChatsForBot };
+// Counts of incoming vs outgoing messages since a given date — the core
+// number for "how much is my bot actually doing" on the dashboard.
+async function getMessageStatsForBot(botId, sinceDate) {
+  const db = await getDb();
+  const rows = await db.collection('messages').aggregate([
+    { $match: { bot_id: Number(botId), created_at: { $gte: sinceDate } } },
+    { $group: { _id: '$direction', count: { $sum: 1 } } },
+  ]).toArray();
+  const stats = { incoming: 0, outgoing: 0 };
+  for (const r of rows) {
+    if (r._id === 'incoming') stats.incoming = r.count;
+    if (r._id === 'outgoing') stats.outgoing = r.count;
+  }
+  return stats;
+}
+
+module.exports = { logMessage, getThreadForContact, deleteThread, getRecentChatsForBot, getMessageStatsForBot };

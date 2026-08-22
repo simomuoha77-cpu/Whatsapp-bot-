@@ -26,6 +26,11 @@ const FEATURE_COLUMNS = [
   'auto_save_contacts_enabled',
   'media_download_enabled',
   'anti_ban_mode_enabled',
+  'group_welcome_enabled',
+  'group_goodbye_enabled',
+  'group_antilink_enabled',
+  'group_tagall_enabled',
+  'business_hours_enabled',
 ];
 
 const FEATURE_LABELS = {
@@ -54,6 +59,11 @@ const FEATURE_LABELS = {
   auto_save_contacts_enabled: 'Auto Save Contacts',
   media_download_enabled: 'Media Download (.song / .video commands)',
   anti_ban_mode_enabled: 'Anti-Ban Mode (human-paced delays, occasional skipped status reactions — reduces risk, does not guarantee against bans)',
+  group_welcome_enabled: 'Group Welcome Message',
+  group_goodbye_enabled: 'Group Goodbye Message',
+  group_antilink_enabled: 'Group Anti-Link (remove links from non-admins)',
+  group_tagall_enabled: 'Group Tag-All (!tagall command for admins)',
+  business_hours_enabled: 'Business Hours Auto-Reply (away message only outside set hours)',
 };
 
 const STEALTH_READ_MODES = ['normal', 'stealth', 'no_mark'];
@@ -83,6 +93,12 @@ const DEFAULTS = {
   anti_call_message: 'Sorry, calls are not accepted on this number. Please send a text message instead.',
   auto_bio_texts: 'Available|At work|Do not disturb',
   anti_ban_mode_enabled: true,
+  group_welcome_text: 'Welcome to the group, {mention}! 👋',
+  group_goodbye_text: 'Goodbye, {mention}. 👋',
+  business_hours_start: '09:00',
+  business_hours_end: '18:00',
+  business_hours_timezone: 'Africa/Nairobi',
+  business_hours_away_text: "We're currently outside business hours. We'll respond when we're back.",
 };
 
 async function getFeatures(botId) {
@@ -175,12 +191,35 @@ async function setStealthReadMode(botId, mode) {
   );
 }
 
+const TEXT_FIELDS = [
+  'group_welcome_text',
+  'group_goodbye_text',
+  'business_hours_start',
+  'business_hours_end',
+  'business_hours_timezone',
+  'business_hours_away_text',
+];
+
+async function setTextField(botId, field, value) {
+  if (!TEXT_FIELDS.includes(field)) {
+    throw new Error(`Unknown text field "${field}"`);
+  }
+  const db = await getDb();
+  const id = Number(botId);
+  await getFeatures(id);
+  await db.collection('bot_features').updateOne(
+    { bot_id: id },
+    { $set: { [field]: value, updated_at: new Date() } }
+  );
+}
+
 module.exports = {
   FEATURE_COLUMNS,
   FEATURE_LABELS,
   STEALTH_READ_MODES,
   STEALTH_READ_MODE_LABELS,
   AI_PROVIDERS,
+  TEXT_FIELDS,
   getFeatures,
   setFeature,
   setAutoReplyMessage,
@@ -189,4 +228,5 @@ module.exports = {
   setAiProvider,
   setAiSystemPrompt,
   setStealthReadMode,
+  setTextField,
 };

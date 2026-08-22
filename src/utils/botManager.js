@@ -78,6 +78,10 @@ async function startBotSocket(botId, slug, onReady) {
 
   // Anti-Call: auto-reject incoming voice/video calls before they ring
   // through, optionally replying with a text explaining why.
+  // Group welcome/goodbye — separate listener, registered once per bot.
+  const { registerGroupParticipantHandler } = require('../handlers/groupHandler');
+  registerGroupParticipantHandler(sock, botId);
+
   sock.ev.on('call', async (calls) => {
     try {
       const { getFeatures } = require('../db/botFeatures');
@@ -137,6 +141,8 @@ async function startBotSocket(botId, slug, onReady) {
         phone_number: ownNumber,
         connected_at: new Date().toISOString(),
         last_seen_at: new Date().toISOString(),
+        disconnected_at: null,
+        disconnect_reason: null,
       });
       logger.info({ botId, ownNumber }, 'Bot connected to WhatsApp');
 
@@ -216,7 +222,7 @@ async function startBotSocket(botId, slug, onReady) {
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const loggedOut = statusCode === DisconnectReason.loggedOut;
 
-      await updateBotStatusInDb(botId, 'disconnected');
+      await updateBotStatusInDb(botId, 'disconnected', { disconnected_at: new Date().toISOString() });
 
       if (loggedOut) {
         logger.warn({ botId }, 'Bot logged out — needs a new QR/pairing code to reconnect.');
@@ -237,7 +243,10 @@ async function startBotSocket(botId, slug, onReady) {
             'Too many reconnect failures in a row — stopping automatic retries to avoid triggering WhatsApp spam detection. Client must regenerate their connection link to reconnect.'
           );
           activeBots.delete(botId);
-          await updateBotStatusInDb(botId, 'disconnected');
+          await updateBotStatusInDb(botId, 'disconnected', {
+            disconnected_at: new Date().toISOString(),
+            disconnect_reason: 'max_reconnect_attempts',
+          });
           return;
         }
 

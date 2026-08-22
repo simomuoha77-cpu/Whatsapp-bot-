@@ -2,8 +2,8 @@ const express = require('express');
 const crypto = require('crypto');
 const { requireClientAuth } = require('../utils/clientAuth');
 const { createBot, getBotById } = require('../db/bots');
-const { createClientAccount, verifyClientLogin, getClientAccountByPhone, getClientAccountByBotId } = require('../db/clientAccounts');
-const { startTrial, getSubscription, isSubscriptionActive, extendSubscription } = require('../db/subscriptions');
+const { createClientAccount, verifyClientLogin, getClientAccountByPhone, getClientAccountByBotId, getClientAccountByReferralCode, countReferrals } = require('../db/clientAccounts');
+const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, extendSubscriptionByYMD } = require('../db/subscriptions');
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
@@ -23,10 +23,17 @@ const {
   setAiProvider,
   setAiSystemPrompt,
   setStealthReadMode,
+  setTextField,
 } = require('../db/botFeatures');
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
-const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownStatusPosts');
+const { getRecentPostsWithViewers, recordOwnStatusPost } = require('../db/ownStatusPosts');
+const { getProductsForBot, addProduct, deleteProduct } = require('../db/products');
+const { getMessageStatsForBot } = require('../db/messages');
+const { countAiReplies } = require('../db/aiChatHistory');
+const { countActiveContacts } = require('../db/contacts');
 const logger = require('../utils/logger');
+
+const REFERRAL_BONUS_DAYS = parseInt(process.env.REFERRAL_BONUS_DAYS || '7', 10);
 
 function layout(title, body) {
   return `
@@ -159,13 +166,16 @@ function createClientRoutes() {
 
   router.get('/register', (req, res) => {
     const error = req.query.error ? `<div class="error-box">${req.query.error}</div>` : '';
+    const refCode = (req.query.ref || '').trim();
     res.send(layout('Register', `
       <h2>Create Your Account</h2>
       ${error}
       <p>Register once with the WhatsApp number you'll connect your bot to. This number gets a free trial — it can't be reused for another trial later.</p>
+      ${refCode ? `<p><small>🎁 Referred by a friend — you'll both get ${REFERRAL_BONUS_DAYS} bonus days once you register.</small></p>` : ''}
       <form method="POST" action="/client/register">
         <input name="phoneNumber" placeholder="Phone number (e.g. 254712345678)" required />
         <input name="password" type="password" placeholder="Choose a password" required minlength="6" />
+        <input type="hidden" name="ref" value="${refCode.replace(/"/g, '')}" />
         <button type="submit">Register</button>
       </form>
       <p>Already registered? <a href="/client/login">Log in</a></p>
@@ -175,6 +185,7 @@ function createClientRoutes() {
   router.post('/register', async (req, res) => {
     const digits = (req.body.phoneNumber || '').replace(/[^0-9]/g, '');
     const password = req.body.password || '';
+    const refCode = (req.body.ref || '').trim();
 
     if (!digits || password.length < 6) {
       return res.redirect('/client/register?error=' + encodeURIComponent('Enter a valid number and a password of at least 6 characters.'));
@@ -187,7 +198,20 @@ function createClientRoutes() {
 
     const bot = await createBot(digits);
     await startTrial(bot.id);
-    await createClientAccount(bot.id, digits, password);
+
+    let referrer = null;
+    if (refCode) {
+      referrer = await getClientAccountByReferralCode(refCode);
+    }
+    const account = await createClientAccount(bot.id, digits, password, referrer ? refCode : null);
+
+    // Reward both sides once the referral actually converts into a real
+    // signup — not just for clicking the link.
+    if (referrer) {
+      await extendSubscriptionByYMD(referrer.bot_id, { days: REFERRAL_BONUS_DAYS });
+      await extendSubscriptionByYMD(bot.id, { days: REFERRAL_BONUS_DAYS });
+      logger.info({ referrerBotId: referrer.bot_id, newBotId: bot.id }, 'Referral bonus applied to both accounts');
+    }
 
     const { onBotReady } = require('./botStartHook');
     startBotSocket(bot.id, bot.slug, onBotReady).catch((err) =>
@@ -265,6 +289,23 @@ function createClientRoutes() {
     const keywordResponses = await getAllKeywordResponses(botId);
     const statusPosts = await getRecentPostsWithViewers(botId, 10);
 
+    // Usage analytics — last 7 days.
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const msgStats = await getMessageStatsForBot(botId, sevenDaysAgo);
+    const aiReplyCount = await countAiReplies(botId, sevenDaysAgo);
+    const activeContactCount = await countActiveContacts(botId, sevenDaysAgo);
+    const products = await getProductsForBot(botId);
+
+    // Referral info.
+    const clientAccount = await getClientAccountByBotId(botId);
+    const referralCount = clientAccount ? await countReferrals(clientAccount.referral_code) : 0;
+    const referralLink = clientAccount ? `${req.protocol}://${req.get('host')}/client/register?ref=${clientAccount.referral_code}` : null;
+
+    // Disconnect alert — only shows when actually disconnected, with how long.
+    const disconnectBanner = (connectionStatus !== 'connected' && bot?.disconnected_at)
+      ? `<div class="error-box">⚠️ Your bot has been disconnected since ${new Date(bot.disconnected_at).toLocaleString()}. Reconnect below to keep your bot running.</div>`
+      : '';
+
     const featureRows = FEATURE_COLUMNS.map((col) => `
       <div class="row">
         <span>${FEATURE_LABELS[col]}</span>
@@ -289,10 +330,28 @@ function createClientRoutes() {
 
     res.send(layout('Dashboard', `
       <h2>Your Bot</h2>
+      ${disconnectBanner}
       <div class="card">
         <p><span class="pill ${active ? 'on' : 'off'}">${active ? 'ACTIVE' : 'EXPIRED'}</span></p>
         <p>${statusText}</p>
       </div>
+
+      <div class="card">
+        <h3>📊 Activity (last 7 days)</h3>
+        <div class="row"><span>Messages received</span><strong>${msgStats.incoming}</strong></div>
+        <div class="row"><span>Replies sent</span><strong>${msgStats.outgoing}</strong></div>
+        <div class="row"><span>AI replies</span><strong>${aiReplyCount}</strong></div>
+        <div class="row"><span>Active contacts</span><strong>${activeContactCount}</strong></div>
+      </div>
+
+      ${clientAccount ? `
+      <div class="card">
+        <h3>🎁 Refer & Earn</h3>
+        <p><small>Share your link — when someone signs up through it, you both get <strong>${REFERRAL_BONUS_DAYS} bonus days</strong> automatically.</small></p>
+        <code style="display:block;margin:10px 0;word-break:break-all;">${referralLink}</code>
+        <p><small>${referralCount} referral${referralCount === 1 ? '' : 's'} so far</small></p>
+      </div>
+      ` : ''}
 
       <div class="card">
         <h3>📱 WhatsApp Connection</h3>
@@ -305,6 +364,7 @@ function createClientRoutes() {
         ${onboardingUrl ? `<code style="display:block;margin:10px 0;word-break:break-all;">${onboardingUrl}</code>` : ''}
         <form method="POST" action="/client/settings/regenerate-link">
           <button type="submit">Generate new connection link</button>
+
         </form>
         <p><small>This link only works with your registered number (${req.session.clientPhoneNumber}). Generating a new one invalidates the old link.</small></p>
       </div>
@@ -362,6 +422,89 @@ function createClientRoutes() {
         <form method="POST" action="/client/settings/welcome-message">
           <input name="message" value="${(features.welcome_message_text || '').replace(/"/g, '&quot;')}" />
           <button type="submit">Save</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>🛒 Products (!order menu)</h3>
+        <p><small>Customers type !order to see this list and pick an item. Leave empty and !order falls back to asking them to type what they want.</small></p>
+        ${products.map((p) => `
+          <div class="row">
+            <span>${p.name}${p.price ? ` — KES ${p.price}` : ''}</span>
+            <form method="POST" action="/client/products/${p.id}/delete" style="width:auto;margin:0;">
+              <button type="submit" class="danger" style="width:auto;">Remove</button>
+            </form>
+          </div>
+        `).join('') || '<p>No products added yet.</p>'}
+        <form method="POST" action="/client/products/add" style="display:flex;gap:8px;margin-top:10px;">
+          <input name="name" placeholder="Item name" required style="flex:2;" />
+          <input name="price" type="number" placeholder="Price (optional)" style="flex:1;" />
+          <button type="submit" style="width:auto;">Add</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>👥 Group Settings</h3>
+        <p><small>Applies in any group this bot is a member of.</small></p>
+        <div class="row">
+          <span>Welcome new members</span>
+          <form method="POST" action="/client/settings/toggle" style="width:auto;margin:0;">
+            <input type="hidden" name="feature" value="group_welcome_enabled" />
+            <label class="switch"><input type="checkbox" name="enabled" value="1" ${features.group_welcome_enabled ? 'checked' : ''} /><span class="slider"></span></label>
+          </form>
+        </div>
+        <form method="POST" action="/client/settings/text-field" style="margin-bottom:10px;">
+          <input type="hidden" name="field" value="group_welcome_text" />
+          <input name="value" value="${(features.group_welcome_text || '').replace(/"/g, '&quot;')}" placeholder="Use {mention} to tag the new member" />
+          <button type="submit">Save</button>
+        </form>
+        <div class="row">
+          <span>Goodbye on leave/remove</span>
+          <form method="POST" action="/client/settings/toggle" style="width:auto;margin:0;">
+            <input type="hidden" name="feature" value="group_goodbye_enabled" />
+            <label class="switch"><input type="checkbox" name="enabled" value="1" ${features.group_goodbye_enabled ? 'checked' : ''} /><span class="slider"></span></label>
+          </form>
+        </div>
+        <form method="POST" action="/client/settings/text-field" style="margin-bottom:10px;">
+          <input type="hidden" name="field" value="group_goodbye_text" />
+          <input name="value" value="${(features.group_goodbye_text || '').replace(/"/g, '&quot;')}" placeholder="Use {mention} to tag the member who left" />
+          <button type="submit">Save</button>
+        </form>
+        <div class="row">
+          <span>Anti-Link (remove links from non-admins)</span>
+          <form method="POST" action="/client/settings/toggle" style="width:auto;margin:0;">
+            <input type="hidden" name="feature" value="group_antilink_enabled" />
+            <label class="switch"><input type="checkbox" name="enabled" value="1" ${features.group_antilink_enabled ? 'checked' : ''} /><span class="slider"></span></label>
+          </form>
+        </div>
+        <div class="row">
+          <span>Tag-All (!tagall, admins only)</span>
+          <form method="POST" action="/client/settings/toggle" style="width:auto;margin:0;">
+            <input type="hidden" name="feature" value="group_tagall_enabled" />
+            <label class="switch"><input type="checkbox" name="enabled" value="1" ${features.group_tagall_enabled ? 'checked' : ''} /><span class="slider"></span></label>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>🕒 Business Hours</h3>
+        <div class="row">
+          <span>Only send away-message outside these hours</span>
+          <form method="POST" action="/client/settings/toggle" style="width:auto;margin:0;">
+            <input type="hidden" name="feature" value="business_hours_enabled" />
+            <label class="switch"><input type="checkbox" name="enabled" value="1" ${features.business_hours_enabled ? 'checked' : ''} /><span class="slider"></span></label>
+          </form>
+        </div>
+        <form method="POST" action="/client/settings/business-hours" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <label style="flex:1;min-width:100px;"><small>Opens</small><input type="time" name="start" value="${features.business_hours_start || '09:00'}" /></label>
+          <label style="flex:1;min-width:100px;"><small>Closes</small><input type="time" name="end" value="${features.business_hours_end || '18:00'}" /></label>
+          <label style="flex:1;min-width:140px;"><small>Timezone</small><input name="timezone" value="${features.business_hours_timezone || 'Africa/Nairobi'}" /></label>
+          <button type="submit" style="width:auto;">Save hours</button>
+        </form>
+        <form method="POST" action="/client/settings/text-field" style="margin-top:8px;">
+          <input type="hidden" name="field" value="business_hours_away_text" />
+          <input name="value" value="${(features.business_hours_away_text || '').replace(/"/g, '&quot;')}" placeholder="Message sent outside business hours" />
+          <button type="submit">Save message</button>
         </form>
       </div>
 
@@ -505,6 +648,36 @@ function createClientRoutes() {
 
   router.post('/settings/welcome-message', async (req, res) => {
     await setWelcomeMessage(req.session.clientBotId, req.body.message || '');
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/products/add', async (req, res) => {
+    const name = (req.body.name || '').trim();
+    const price = req.body.price ? Number(req.body.price) : null;
+    if (name) {
+      await addProduct(req.session.clientBotId, name, price);
+    }
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/products/:id/delete', async (req, res) => {
+    await deleteProduct(req.session.clientBotId, req.params.id);
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/text-field', async (req, res) => {
+    const { field, value } = req.body;
+    if (field) {
+      await setTextField(req.session.clientBotId, field, value || '');
+    }
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/business-hours', async (req, res) => {
+    const botId = req.session.clientBotId;
+    if (req.body.start) await setTextField(botId, 'business_hours_start', req.body.start);
+    if (req.body.end) await setTextField(botId, 'business_hours_end', req.body.end);
+    if (req.body.timezone) await setTextField(botId, 'business_hours_timezone', req.body.timezone);
     res.redirect('/client/dashboard');
   });
 

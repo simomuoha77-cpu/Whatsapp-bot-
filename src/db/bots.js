@@ -86,6 +86,8 @@ async function deleteBot(id) {
     db.collection('client_accounts').deleteMany({ bot_id: botId }),
     db.collection('subscriptions').deleteMany({ bot_id: botId }),
     db.collection('payments').deleteMany({ bot_id: botId }),
+    db.collection('products').deleteMany({ bot_id: botId }),
+    db.collection('orders').deleteMany({ bot_id: botId }),
   ]);
 }
 

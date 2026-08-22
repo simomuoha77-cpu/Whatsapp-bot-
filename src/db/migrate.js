@@ -65,6 +65,11 @@ async function runMigrations() {
     db.collection('command_logs').createIndex({ id: 1 }, { unique: true }),
     db.collection('scheduled_status_posts').createIndex({ id: 1 }, { unique: true }),
     db.collection('reminders').createIndex({ id: 1 }, { unique: true }),
+
+    db.collection('products').createIndex({ bot_id: 1 }),
+    db.collection('products').createIndex({ id: 1 }, { unique: true }),
+    db.collection('orders').createIndex({ bot_id: 1 }),
+    db.collection('orders').createIndex({ id: 1 }, { unique: true }),
   ]);
 
   logger.info('MongoDB indexes ensured.');

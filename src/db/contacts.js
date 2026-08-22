@@ -100,6 +100,14 @@ async function manuallyAddContact(botId, phoneNumber, displayName) {
   return contact;
 }
 
+async function countActiveContacts(botId, sinceDate) {
+  const db = await getDb();
+  return db.collection('contacts').countDocuments({
+    bot_id: Number(botId),
+    last_seen_at: { $gte: sinceDate },
+  });
+}
+
 module.exports = {
   upsertContact,
   manuallyAddContact,
@@ -109,4 +117,5 @@ module.exports = {
   isBlocked,
   getAllContactJids,
   phoneFromJid,
+  countActiveContacts,
 };

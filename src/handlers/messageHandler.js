@@ -44,6 +44,40 @@ function getBotSentSet(botId) {
   return botSentMessageIds.get(botId);
 }
 
+/**
+ * Checks whether the current time (in the given timezone) falls within
+ * start-end, both as "HH:MM" strings. Handles overnight ranges correctly
+ * (e.g. 22:00-06:00 means "9pm to 6am", wrapping past midnight) — a plain
+ * numeric comparison would silently treat that as "never open".
+ */
+function isWithinBusinessHours(startStr, endStr, timezone) {
+  try {
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone || 'UTC',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(now);
+    const hour = parseInt(parts.find((p) => p.type === 'hour').value, 10);
+    const minute = parseInt(parts.find((p) => p.type === 'minute').value, 10);
+    const nowMinutes = hour * 60 + minute;
+
+    const [startH, startM] = (startStr || '09:00').split(':').map(Number);
+    const [endH, endM] = (endStr || '18:00').split(':').map(Number);
+    const startMinutes = startH * 60 + startM;
+    const endMinutes = endH * 60 + endM;
+
+    if (startMinutes <= endMinutes) {
+      return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+    }
+    // Overnight range (e.g. 22:00-06:00)
+    return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+  } catch (err) {
+    return true; // if anything about the config is malformed, fail open (treat as business hours, matching old always-reply behavior)
+  }
+}
+
 function extractText(msg) {
   const m = msg.message || {};
   return (
@@ -213,6 +247,19 @@ function registerMessageHandler(sock, botId) {
           continue; // .v / .vlist never fall through to normal command processing
         }
 
+        // Group-specific features (anti-link, tag-all) — the only group
+        // message handling this bot does, everything else below stays
+        // direct-chat-only.
+        if (isGroup && !isSelfChat) {
+          try {
+            const { handleGroupMessage } = require('./groupHandler');
+            const wasHandled = await handleGroupMessage(sock, botId, msg, text);
+            if (wasHandled) continue;
+          } catch (err) {
+            logger.error({ err, botId }, 'Error in group message handling');
+          }
+        }
+
         // Only direct 1:1 contacts are tracked — groups are out of scope entirely.
         // Self-chat is also excluded here: it's only ever used for .v/.vlist
         // retrieval above, never for normal auto-reply/command processing.
@@ -356,13 +403,30 @@ function registerMessageHandler(sock, botId) {
         }
 
         // Auto-reply (away message) — only if this bot has the feature enabled.
+        // If Business Hours is also on, this only fires OUTSIDE the
+        // configured hours, using the business-hours-specific text instead
+        // of the generic auto-reply message — inside business hours, no
+        // away message is sent at all (a real person might reply instead).
         if (features.auto_reply) {
-          const key = `${botId}:${sender}`;
-          const lastSent = lastAutoReplyAt.get(key) || 0;
-          if (Date.now() - lastSent > AUTO_REPLY_COOLDOWN_MS) {
-            lastAutoReplyAt.set(key, Date.now());
-            await replyDelay();
-            await reply(features.auto_reply_message || "Thanks for your message! I'll reply shortly.");
+          const outsideHours = features.business_hours_enabled
+            ? !isWithinBusinessHours(
+                features.business_hours_start,
+                features.business_hours_end,
+                features.business_hours_timezone
+              )
+            : true; // business hours off = always eligible, same as before
+
+          if (outsideHours) {
+            const key = `${botId}:${sender}`;
+            const lastSent = lastAutoReplyAt.get(key) || 0;
+            if (Date.now() - lastSent > AUTO_REPLY_COOLDOWN_MS) {
+              lastAutoReplyAt.set(key, Date.now());
+              await replyDelay();
+              const message = features.business_hours_enabled
+                ? (features.business_hours_away_text || "We're currently outside business hours. We'll respond when we're back.")
+                : (features.auto_reply_message || "Thanks for your message! I'll reply shortly.");
+              await reply(message);
+            }
           }
         }
 
@@ -441,7 +505,7 @@ function registerMessageHandler(sock, botId) {
 
         const state = await getState(botId, sender);
         if (state.state !== 'idle' && !text.startsWith(PREFIX)) {
-          const handled = await handleStatefulFlow({ botId, state, text, reply, sender });
+          const handled = await handleStatefulFlow({ botId, state, text, reply, sender, sock });
           if (handled) continue;
         }
 

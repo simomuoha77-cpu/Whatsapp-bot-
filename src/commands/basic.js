@@ -28,11 +28,10 @@ register('ping', {
 });
 
 register('order', {
-  description: 'Start a simple order flow (example)',
+  description: 'Start an order (shows the menu if one is set up)',
   handler: async ({ reply, botId, sender }) => {
-    const { setState } = require('../db/sessionState');
-    await setState(botId, sender, 'awaiting_order_item', {});
-    await reply('🛒 What would you like to order? (type the item name)');
+    const { startOrderFlow } = require('./order');
+    await startOrderFlow({ botId, sender, reply });
   },
 });
 
