@@ -148,14 +148,30 @@ async function handleStatefulFlow({ botId, state, text, reply, sender, sock }) {
   }
 
   if (state.state === 'awaiting_order_address') {
-    await setState(botId, sender, 'awaiting_order_phone', { ...state.context, address: text });
+    const address = text.trim();
+    // Not trying to verify it's a *real* address (impossible without a
+    // maps API) — just catching obviously-not-an-address input like a
+    // single stray word, so it doesn't get treated as valid.
+    if (address.length < 5) {
+      await reply("That doesn't look like a full address — please include enough detail for delivery (e.g. area, street, landmark).");
+      return true;
+    }
+    await setState(botId, sender, 'awaiting_order_phone', { ...state.context, address });
     await reply(`Thanks. What's the best phone number to reach you on for this order?`);
     return true;
   }
 
   if (state.state === 'awaiting_order_phone') {
+    const digitsOnly = text.replace(/[^0-9]/g, '');
+    // A real phone number, safaricom-style or otherwise, is going to be at
+    // least 9 digits once you strip spaces/dashes/+. Anything shorter is
+    // clearly not a phone number, not a judgment call.
+    if (digitsOnly.length < 9) {
+      await reply("That doesn't look like a valid phone number. Please send just the digits, e.g. 0712345678.");
+      return true;
+    }
     const { product, address } = state.context;
-    const phone = text.trim();
+    const phone = digitsOnly;
     await clearState(botId, sender);
 
     const order = await createOrder({

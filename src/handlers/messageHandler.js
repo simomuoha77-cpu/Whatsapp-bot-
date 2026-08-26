@@ -396,9 +396,17 @@ function registerMessageHandler(sock, botId) {
           }
         }
 
+        // Fetched here (rather than down where it's used for command/order
+        // routing) so Welcome Message and Auto-Reply can also check it —
+        // neither should ever fire while the customer is in the middle of
+        // an active flow like an order, which was firing independently of
+        // this and interrupting mid-conversation.
+        const state = await getState(botId, sender);
+        const isMidFlow = state.state !== 'idle';
+
         // Welcome Message: sent once, the very first time a contact messages
         // this bot. Independent of Auto Reply, which can fire repeatedly.
-        if (features.welcome_message_enabled && isFirstMessageFromContact) {
+        if (features.welcome_message_enabled && isFirstMessageFromContact && !isMidFlow) {
           await replyDelay();
           await reply(features.welcome_message_text || 'Welcome! Thanks for messaging us.');
         }
@@ -408,7 +416,10 @@ function registerMessageHandler(sock, botId) {
         // configured hours, using the business-hours-specific text instead
         // of the generic auto-reply message — inside business hours, no
         // away message is sent at all (a real person might reply instead).
-        if (features.auto_reply) {
+        // Never fires mid-flow (e.g. while someone's answering order
+        // questions) — that was firing on every message regardless and
+        // interleaving with the order flow's own replies.
+        if (features.auto_reply && !isMidFlow) {
           const outsideHours = features.business_hours_enabled
             ? !isWithinBusinessHours(
                 features.business_hours_start,
@@ -524,7 +535,6 @@ function registerMessageHandler(sock, botId) {
         // simply won't respond at all.
         if (!features.commands_enabled) continue;
 
-        const state = await getState(botId, sender);
         if (state.state !== 'idle' && !text.startsWith(PREFIX)) {
           const handled = await handleStatefulFlow({ botId, state, text, reply, sender, sock });
           if (handled) continue;
