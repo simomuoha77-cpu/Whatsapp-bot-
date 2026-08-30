@@ -215,6 +215,11 @@ function createAdminRoutes() {
     const features = await getFeatures(botId);
     const live = getBotState(botId);
     const status = live?.status || bot.status;
+    const joinGroupMessage = req.query.joinGroupError
+      ? `<div class="row" style="border:1px solid #5c2323;background:#3a1414;border-radius:8px;padding:10px;color:#fca5a5;">${req.query.joinGroupError}</div>`
+      : req.query.joinGroupSuccess
+      ? `<div class="row" style="border:1px solid #1a5c3a;background:#0d2f22;border-radius:8px;padding:10px;color:#4ade80;">${req.query.joinGroupSuccess}</div>`
+      : '';
     const contacts = await getContactsForBot(botId, 200);
     const recentChats = await getRecentChatsForBot(botId, 50);
     const posts = await getScheduledStatusPostsForBot(botId);
@@ -467,6 +472,16 @@ function createAdminRoutes() {
       </div>
 
       <div class="card">
+        <h3>➕ Join Group</h3>
+        <p><small>Paste a WhatsApp group invite link (chat.whatsapp.com/...) and this bot's number will join it. Bot must be connected.</small></p>
+        ${joinGroupMessage}
+        <form method="POST" action="/admin/bot/${botId}/join-group">
+          <input name="link" placeholder="https://chat.whatsapp.com/XXXXXXXX" required />
+          <button type="submit">Join</button>
+        </form>
+      </div>
+
+      <div class="card">
         <h3>👁️ View-Once Captures</h3>
         <p><small>Captured media is also forwarded to this bot's own "Message Yourself" chat.</small></p>
         ${viewOnceRows}
@@ -700,6 +715,37 @@ function createAdminRoutes() {
 
     await deleteThread(botId, jid);
     res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/join-group', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const link = (req.body.link || '').trim();
+
+    const live = getBotState(botId);
+    if (!live || !live.sock || live.status !== 'connected') {
+      return res.redirect(`/admin/bot/${botId}?joinGroupError=` + encodeURIComponent('Bot is not connected right now.'));
+    }
+
+    // Accepts either the full link or just the bare invite code.
+    const match = link.match(/chat\.whatsapp\.com\/([A-Za-z0-9]+)/);
+    const inviteCode = match ? match[1] : link.replace(/[^A-Za-z0-9]/g, '');
+    if (!inviteCode) {
+      return res.redirect(`/admin/bot/${botId}?joinGroupError=` + encodeURIComponent('That doesn\'t look like a valid group invite link.'));
+    }
+
+    try {
+      const groupId = await live.sock.groupAcceptInvite(inviteCode);
+      const metadata = await live.sock.groupMetadata(groupId).catch(() => null);
+      const groupName = metadata?.subject || groupId;
+      logger.info({ botId, groupId, groupName }, 'Bot joined group via invite link');
+      res.redirect(`/admin/bot/${botId}?joinGroupSuccess=` + encodeURIComponent(`Joined "${groupName}" successfully.`));
+    } catch (err) {
+      logger.warn({ err, botId, link }, 'Failed to join group via invite link');
+      const message = err?.message?.includes('not-authorized') || err?.data === 401
+        ? 'This invite link is invalid, expired, or the bot was removed from this group before.'
+        : 'Failed to join the group. Check the link and try again.';
+      res.redirect(`/admin/bot/${botId}?joinGroupError=` + encodeURIComponent(message));
+    }
   });
 
   router.post('/bot/:id/contacts/add', async (req, res) => {
