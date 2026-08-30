@@ -220,6 +220,24 @@ function createAdminRoutes() {
       : req.query.joinGroupSuccess
       ? `<div class="row" style="border:1px solid #1a5c3a;background:#0d2f22;border-radius:8px;padding:10px;color:#4ade80;">${req.query.joinGroupSuccess}</div>`
       : '';
+
+    const addMemberMessage = req.query.addMemberError
+      ? `<div class="row" style="border:1px solid #5c2323;background:#3a1414;border-radius:8px;padding:10px;color:#fca5a5;">${req.query.addMemberError}</div>`
+      : req.query.addMemberSuccess
+      ? `<div class="row" style="border:1px solid #1a5c3a;background:#0d2f22;border-radius:8px;padding:10px;color:#4ade80;">${req.query.addMemberSuccess}</div>`
+      : '';
+
+    // Live-fetched, not stored — the bot's actual current group list from
+    // WhatsApp itself, so the dropdown can never show a stale/left group.
+    let botGroups = [];
+    if (live && live.sock && live.status === 'connected') {
+      try {
+        const groupsObj = await live.sock.groupFetchAllParticipating();
+        botGroups = Object.values(groupsObj).map((g) => ({ id: g.id, subject: g.subject }));
+      } catch (err) {
+        logger.warn({ err, botId }, 'Failed to fetch participating groups');
+      }
+    }
     const contacts = await getContactsForBot(botId, 200);
     const recentChats = await getRecentChatsForBot(botId, 50);
     const posts = await getScheduledStatusPostsForBot(botId);
@@ -482,6 +500,21 @@ function createAdminRoutes() {
       </div>
 
       <div class="card">
+        <h3>👤 Add Member to Group</h3>
+        <p><small>Adds someone (e.g. re-adding a removed member) to a group this bot is admin of. The bot must be a group admin, and if WhatsApp's privacy rules don't allow a direct add, that person gets sent an invite link automatically instead — this is normal WhatsApp behavior, not something this bypasses.</small></p>
+        ${addMemberMessage}
+        ${botGroups.length > 0 ? `
+          <form method="POST" action="/admin/bot/${botId}/add-to-group">
+            <select name="groupId" required>
+              ${botGroups.map((g) => `<option value="${g.id}">${g.subject}</option>`).join('')}
+            </select>
+            <input name="phone" placeholder="Phone number, e.g. 254712345678" required />
+            <button type="submit">Add</button>
+          </form>
+        ` : '<p>Bot must be connected and in at least one group.</p>'}
+      </div>
+
+      <div class="card">
         <h3>👁️ View-Once Captures</h3>
         <p><small>Captured media is also forwarded to this bot's own "Message Yourself" chat.</small></p>
         ${viewOnceRows}
@@ -715,6 +748,42 @@ function createAdminRoutes() {
 
     await deleteThread(botId, jid);
     res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/add-to-group', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const groupId = req.body.groupId;
+    const digits = (req.body.phone || '').replace(/[^0-9]/g, '');
+
+    const live = getBotState(botId);
+    if (!live || !live.sock || live.status !== 'connected') {
+      return res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent('Bot is not connected right now.'));
+    }
+    if (!digits || !groupId) {
+      return res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent('Group and phone number are required.'));
+    }
+
+    const targetJid = `${digits}@s.whatsapp.net`;
+    try {
+      const result = await live.sock.groupParticipantsUpdate(groupId, [targetJid], 'add');
+      const entry = result?.[0];
+      // WhatsApp's own status codes for this action: 200 = added directly,
+      // 403 = their privacy settings blocked a direct add (WhatsApp itself
+      // then auto-sends them an invite link instead — normal behavior),
+      // 408 = request timed out, 404 = not a WhatsApp number.
+      if (entry?.status === '200') {
+        res.redirect(`/admin/bot/${botId}?addMemberSuccess=` + encodeURIComponent(`Added ${digits} to the group.`));
+      } else if (entry?.status === '403') {
+        res.redirect(`/admin/bot/${botId}?addMemberSuccess=` + encodeURIComponent(`${digits} couldn't be added directly (their privacy settings) — WhatsApp sent them an invite link instead.`));
+      } else if (entry?.status === '404') {
+        res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent(`${digits} is not a valid WhatsApp number.`));
+      } else {
+        res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent(`Could not add ${digits} (status ${entry?.status || 'unknown'}). The bot may not be a group admin.`));
+      }
+    } catch (err) {
+      logger.warn({ err, botId, groupId, targetJid }, 'Failed to add member to group');
+      res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent('Failed to add member. The bot may not be a group admin.'));
+    }
   });
 
   router.post('/bot/:id/join-group', async (req, res) => {
