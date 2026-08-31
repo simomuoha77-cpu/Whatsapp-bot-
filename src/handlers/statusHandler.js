@@ -220,7 +220,17 @@ function registerStatusHandler(sock, botId) {
           try {
             await sock.readMessages([msg.key]);
           } catch (err) {
-            logger.warn({ err, botId }, 'Failed to mark status as viewed');
+            // One retry before giving up — most failures here are transient
+            // (a reconnect happening at that exact moment, a brief network
+            // blip), and permanently dropping the view on the first hiccup
+            // is what was causing views to go missing intermittently.
+            logger.warn({ err, botId }, 'Failed to mark status as viewed, retrying once');
+            try {
+              await randomDelay(500, 1500);
+              await sock.readMessages([msg.key]);
+            } catch (retryErr) {
+              logger.warn({ err: retryErr, botId }, 'Retry also failed, giving up on this status view');
+            }
           }
 
           if (features.auto_react_status) {
@@ -270,6 +280,13 @@ function registerStatusHandler(sock, botId) {
 }
 
 function resetQueue(botId) {
+  // Both queues, not just reactions — a view task still sitting here from
+  // right before a disconnect holds a closure over the now-dead socket. If
+  // only reactions get cleared, that stale task stays in line, eventually
+  // fails/times out against the dead connection, and burns the full
+  // TASK_TIMEOUT_MS delaying every real view queued behind it on the new
+  // connection. This was a real, confirmed cause of views being missed.
+  viewQueues.delete(botId);
   reactionQueues.delete(botId);
 }
 
