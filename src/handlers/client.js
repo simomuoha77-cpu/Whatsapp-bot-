@@ -7,7 +7,7 @@ const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, e
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
-const { startBotSocket, getBotState, deleteBotSession } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { getDb } = require('../db/mongo');
 const {
   FEATURE_COLUMNS,
@@ -215,7 +215,7 @@ function createClientRoutes() {
     }
 
     const { onBotReady } = require('./botStartHook');
-    startBotSocket(bot.id, bot.slug, onBotReady).catch((err) =>
+    enqueueConnect(() => startBotSocket(bot.id, bot.slug, onBotReady)).catch((err) =>
       logger.error({ err, botId: bot.id }, 'Failed to start bot socket on client registration')
     );
 
