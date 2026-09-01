@@ -10,8 +10,6 @@ const STATUS_MEDIA_ROOT = path.join(__dirname, '..', '..', 'downloads', 'status-
 if (!fs.existsSync(STATUS_MEDIA_ROOT)) fs.mkdirSync(STATUS_MEDIA_ROOT, { recursive: true });
 
 const STATUS_JID = 'status@broadcast';
-const REACT_DELAY_MIN_MS = parseInt(process.env.STATUS_REACT_DELAY_MIN_MS || '1500', 10);
-const REACT_DELAY_MAX_MS = parseInt(process.env.STATUS_REACT_DELAY_MAX_MS || '5000', 10);
 const VIEW_DELAY_MIN_MS = parseInt(process.env.STATUS_VIEW_DELAY_MIN_MS || '800', 10);
 const VIEW_DELAY_MAX_MS = parseInt(process.env.STATUS_VIEW_DELAY_MAX_MS || '3000', 10);
 
@@ -143,7 +141,8 @@ async function reactToStatus(sock, msg) {
   // Sending a rotating/keyword emoji just wastes effort on something that
   // will always display as ❤️ anyway — so send the heart directly.
   const emoji = '❤️';
-  await randomDelay(REACT_DELAY_MIN_MS, REACT_DELAY_MAX_MS);
+  // No delay here on purpose — the reaction should land immediately after
+  // the view, not sit spaced out behind an artificial 1.5-5s wait.
 
   const participant = msg.key.participant;
   const opts = participant
@@ -258,28 +257,21 @@ function registerStatusHandler(sock, botId) {
           }
 
           if (features.auto_react_status) {
-            // Anti-Ban Mode: reacting to literally every single status,
-            // every time, with zero misses is itself an unnatural pattern —
-            // a real person doesn't like every friend's status without
-            // exception. Skipping a random ~15% keeps it looking human.
-            const shouldSkip = features.anti_ban_mode_enabled !== false && Math.random() < 0.15;
-            if (!shouldSkip) {
-              enqueueReaction(botId, async () => {
-                const emoji = await reactToStatus(sock, msg);
-                logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
-              });
-            }
+            // Every status gets reacted to — no random skipping. Queued
+            // immediately (right after the view above), and reactToStatus
+            // itself no longer waits before sending.
+            enqueueReaction(botId, async () => {
+              const emoji = await reactToStatus(sock, msg);
+              logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+            });
           }
         });
       } else if (features.auto_react_status) {
-        // Viewing is off but reacting is on — still react on its own.
-        const shouldSkip = features.anti_ban_mode_enabled !== false && Math.random() < 0.15;
-        if (!shouldSkip) {
-          enqueueReaction(botId, async () => {
-            const emoji = await reactToStatus(sock, msg);
-            logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
-          });
-        }
+        // Viewing is off but reacting is on — still react on its own, every time.
+        enqueueReaction(botId, async () => {
+          const emoji = await reactToStatus(sock, msg);
+          logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+        });
       }
 
       if (features.auto_status_save_enabled) {
