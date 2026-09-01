@@ -217,19 +217,43 @@ function registerStatusHandler(sock, botId) {
         // viewing the next status that comes in.
         enqueueView(botId, async () => {
           await randomDelay(VIEW_DELAY_MIN_MS, VIEW_DELAY_MAX_MS);
+
+          // Read Receipts privacy is one global WhatsApp setting that gates
+          // BOTH message blue-ticks and whether a status view registers with
+          // the poster. In stealth/no_mark mode it rests at 'none' (so
+          // message reads stay invisible) — but that also means
+          // readMessages() below succeeds locally while WhatsApp silently
+          // never reports the view. So: briefly flip to 'all' just for this
+          // one view, then put it back right after, exactly as documented
+          // (but never actually implemented) in botManager.js/client.js/admin.js.
+          const stealthMode = features.stealth_read_mode || 'normal';
+          const needsToggle = stealthMode !== 'normal';
+
           try {
-            await sock.readMessages([msg.key]);
-          } catch (err) {
-            // One retry before giving up — most failures here are transient
-            // (a reconnect happening at that exact moment, a brief network
-            // blip), and permanently dropping the view on the first hiccup
-            // is what was causing views to go missing intermittently.
-            logger.warn({ err, botId }, 'Failed to mark status as viewed, retrying once');
+            if (needsToggle) await sock.updateReadReceiptsPrivacy('all');
+
             try {
-              await randomDelay(500, 1500);
               await sock.readMessages([msg.key]);
-            } catch (retryErr) {
-              logger.warn({ err: retryErr, botId }, 'Retry also failed, giving up on this status view');
+            } catch (err) {
+              // One retry before giving up — most failures here are transient
+              // (a reconnect happening at that exact moment, a brief network
+              // blip), and permanently dropping the view on the first hiccup
+              // is what was causing views to go missing intermittently.
+              logger.warn({ err, botId }, 'Failed to mark status as viewed, retrying once');
+              try {
+                await randomDelay(500, 1500);
+                await sock.readMessages([msg.key]);
+              } catch (retryErr) {
+                logger.warn({ err: retryErr, botId }, 'Retry also failed, giving up on this status view');
+              }
+            }
+          } finally {
+            if (needsToggle) {
+              try {
+                await sock.updateReadReceiptsPrivacy('none');
+              } catch (err) {
+                logger.warn({ err, botId }, 'Failed to restore read receipts privacy after status view');
+              }
             }
           }
 
