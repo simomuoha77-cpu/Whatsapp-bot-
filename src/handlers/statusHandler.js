@@ -12,6 +12,10 @@ if (!fs.existsSync(STATUS_MEDIA_ROOT)) fs.mkdirSync(STATUS_MEDIA_ROOT, { recursi
 const STATUS_JID = 'status@broadcast';
 const VIEW_DELAY_MIN_MS = parseInt(process.env.STATUS_VIEW_DELAY_MIN_MS || '800', 10);
 const VIEW_DELAY_MAX_MS = parseInt(process.env.STATUS_VIEW_DELAY_MAX_MS || '3000', 10);
+// Minimum time between marking a status viewed and reacting to it — required
+// for the reaction to actually register server-side (see reactToStatus).
+// Deliberately much shorter than the old 1.5-5s anti-ban pacing delay.
+const REACT_MIN_GAP_MS = parseInt(process.env.STATUS_REACT_MIN_GAP_MS || '600', 10);
 
 // Baileys can redeliver the same status update multiple times (retries,
 // multi-device sync, etc.). Without deduplication, the bot would react to
@@ -141,8 +145,16 @@ async function reactToStatus(sock, msg) {
   // Sending a rotating/keyword emoji just wastes effort on something that
   // will always display as ❤️ anyway — so send the heart directly.
   const emoji = '❤️';
-  // No delay here on purpose — the reaction should land immediately after
-  // the view, not sit spaced out behind an artificial 1.5-5s wait.
+
+  // WhatsApp's servers must register the *view* before they'll accept a
+  // *reaction* to that same status — react too soon after readMessages()
+  // resolves locally (which only means "the request went out", not "the
+  // server has processed it yet") and the reaction gets silently dropped:
+  // no error, view still shows, but no heart ever appears for the poster.
+  // This is a fixed, short buffer for correctness, not pacing for
+  // anti-detection — it's the minimum gap needed for the reaction to
+  // actually register.
+  await randomDelay(REACT_MIN_GAP_MS, REACT_MIN_GAP_MS + 300);
 
   const participant = msg.key.participant;
   const opts = participant
