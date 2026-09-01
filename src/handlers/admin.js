@@ -28,6 +28,7 @@ const {
 } = require('../db/scheduledGroupPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
 const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
+const { resolveSchedule } = require('../utils/scheduleTime');
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
 const { getRecentCapturesForBot } = require('../db/deletedCaptures');
 const { getStatusSavesForBot } = require('../db/statusSaves');
@@ -573,28 +574,34 @@ function createAdminRoutes() {
 
       <div class="card">
         <h3>Scheduled status posts</h3>
-        <p><small>Daily at a fixed time. Attach an image/video, add a caption, or both.</small></p>
+        <p><small>Pick a time. Leave date blank to repeat daily, or set a date to post once. Attach an image/video, add a caption, or both.</small></p>
+        ${req.query.postError ? `<p style="color:#f87171;">${req.query.postError}</p>` : ''}
         ${postRows}
         <form method="POST" action="/admin/bot/${botId}/scheduled-posts" enctype="multipart/form-data">
-          <input name="time" placeholder="HH:MM" required />
-          <input name="caption" placeholder="Caption (optional if attaching media)" />
-          <input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4" />
+          <label><small>Time</small><input type="time" name="time" required /></label>
+          <label><small>Date (optional — leave blank to repeat every day)</small><input type="date" name="date" /></label>
+          <label><small>Caption</small><input name="caption" placeholder="Optional if attaching media" /></label>
+          <label><small>Media (optional)</small><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4" /></label>
           <button type="submit">Schedule</button>
         </form>
       </div>
 
       <div class="card">
         <h3>Group auto-posts</h3>
-        <p><small>Post to a group the bot is in — either daily at a fixed time, or once on a specific date. Attach an image/video, add a caption, or both.</small></p>
+        <p><small>Post to a group the bot is in. Leave date blank to repeat daily, or set a date to post once. Attach an image/video, add a caption, or both.</small></p>
+        ${req.query.groupPostError ? `<p style="color:#f87171;">${req.query.groupPostError}</p>` : ''}
         ${groupPostRows}
         ${botGroups.length > 0 ? `
           <form method="POST" action="/admin/bot/${botId}/group-posts" enctype="multipart/form-data">
-            <select name="groupId" required>
-              ${botGroups.map((g) => `<option value="${g.id}">${g.subject}</option>`).join('')}
-            </select>
-            <input name="time" placeholder="HH:MM (daily) or YYYY-MM-DDTHH:MM (once)" required />
-            <input name="caption" placeholder="Caption (optional if attaching media)" />
-            <input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4" />
+            <label><small>Group</small>
+              <select name="groupId" required>
+                ${botGroups.map((g) => `<option value="${g.id}">${g.subject}</option>`).join('')}
+              </select>
+            </label>
+            <label><small>Time</small><input type="time" name="time" required /></label>
+            <label><small>Date (optional — leave blank to repeat every day)</small><input type="date" name="date" /></label>
+            <label><small>Caption</small><input name="caption" placeholder="Optional if attaching media" /></label>
+            <label><small>Media (optional)</small><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4" /></label>
             <button type="submit">Schedule</button>
           </form>
         ` : '<p>Bot must be connected and in at least one group.</p>'}
@@ -1003,21 +1010,30 @@ function createAdminRoutes() {
       await handleScheduledMediaUpload(req, res);
     } catch (err) {
       logger.warn({ err, botId }, 'Scheduled status post media upload rejected');
-      return res.redirect(`/admin/bot/${botId}`);
+      return res.redirect(`/admin/bot/${botId}?postError=${encodeURIComponent(err.message || 'Media upload failed.')}`);
     }
 
-    const match = /^(\d{1,2}):(\d{2})$/.exec(req.body.time || '');
-    const caption = (req.body.caption || '').trim();
-    if (match && (caption || req.file)) {
-      const cronExpression = `${parseInt(match[2], 10)} ${parseInt(match[1], 10)} * * *`;
+    try {
+      const caption = (req.body.caption || '').trim();
+      if (!caption && !req.file) {
+        return res.redirect(`/admin/bot/${botId}?postError=${encodeURIComponent('Add a caption or attach media.')}`);
+      }
+      const { cronExpression, runAt, error } = resolveSchedule(req.body.time, req.body.date);
+      if (error) {
+        return res.redirect(`/admin/bot/${botId}?postError=${encodeURIComponent(error)}`);
+      }
       await createScheduledStatusPost({
         botId,
         cronExpression,
+        runAt,
         caption: caption || null,
         mediaPath: req.file ? req.file.path : null,
         mediaType: mediaTypeForFile(req.file),
       });
       await refreshScheduler();
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to create scheduled status post');
+      return res.redirect(`/admin/bot/${botId}?postError=${encodeURIComponent('Something went wrong saving that — check server logs.')}`);
     }
     res.redirect(`/admin/bot/${botId}`);
   });
@@ -1034,43 +1050,44 @@ function createAdminRoutes() {
       await handleScheduledMediaUpload(req, res);
     } catch (err) {
       logger.warn({ err, botId }, 'Group post media upload rejected');
-      return res.redirect(`/admin/bot/${botId}`);
+      return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent(err.message || 'Media upload failed.')}`);
     }
 
-    const groupJid = (req.body.groupId || '').trim();
-    const caption = (req.body.caption || '').trim();
-    if (!groupJid || !(caption || req.file)) {
-      return res.redirect(`/admin/bot/${botId}`);
-    }
-
-    const live = getBotState(botId);
-    let groupName = null;
-    if (live && live.sock && live.status === 'connected') {
-      const metadata = await live.sock.groupMetadata(groupJid).catch(() => null);
-      groupName = metadata?.subject || null;
-    }
-
-    const dailyMatch = /^(\d{1,2}):(\d{2})$/.exec(req.body.time || '');
-    const payload = {
-      botId,
-      groupJid,
-      groupName,
-      caption: caption || null,
-      mediaPath: req.file ? req.file.path : null,
-      mediaType: mediaTypeForFile(req.file),
-    };
-
-    if (dailyMatch) {
-      payload.cronExpression = `${parseInt(dailyMatch[2], 10)} ${parseInt(dailyMatch[1], 10)} * * *`;
-      await createScheduledGroupPost(payload);
-      await refreshScheduler();
-    } else {
-      const date = new Date(req.body.time);
-      if (!isNaN(date.getTime())) {
-        payload.runAt = date.toISOString();
-        await createScheduledGroupPost(payload);
-        await refreshScheduler();
+    try {
+      const groupJid = (req.body.groupId || '').trim();
+      const caption = (req.body.caption || '').trim();
+      if (!groupJid) {
+        return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent('Pick a group.')}`);
       }
+      if (!caption && !req.file) {
+        return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent('Add a caption or attach media.')}`);
+      }
+      const { cronExpression, runAt, error } = resolveSchedule(req.body.time, req.body.date);
+      if (error) {
+        return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent(error)}`);
+      }
+
+      const live = getBotState(botId);
+      let groupName = null;
+      if (live && live.sock && live.status === 'connected') {
+        const metadata = await live.sock.groupMetadata(groupJid).catch(() => null);
+        groupName = metadata?.subject || null;
+      }
+
+      await createScheduledGroupPost({
+        botId,
+        groupJid,
+        groupName,
+        cronExpression,
+        runAt,
+        caption: caption || null,
+        mediaPath: req.file ? req.file.path : null,
+        mediaType: mediaTypeForFile(req.file),
+      });
+      await refreshScheduler();
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to create scheduled group post');
+      return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent('Something went wrong saving that — check server logs.')}`);
     }
     res.redirect(`/admin/bot/${botId}`);
   });

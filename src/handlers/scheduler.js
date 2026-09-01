@@ -2,7 +2,8 @@ const fs = require('fs');
 const cron = require('node-cron');
 const logger = require('../utils/logger');
 const {
-  getActiveScheduledStatusPosts,
+  getActiveRecurringStatusPosts,
+  getDueOneOffStatusPosts,
   markScheduledStatusPostRun,
 } = require('../db/scheduledStatusPosts');
 const {
@@ -106,7 +107,7 @@ async function startScheduler() {
   for (const job of activeJobs.values()) job.stop();
   activeJobs.clear();
 
-  const posts = await getActiveScheduledStatusPosts();
+  const posts = await getActiveRecurringStatusPosts();
   for (const post of posts) {
     if (!cron.validate(post.cron_expression)) continue;
     const job = cron.schedule(post.cron_expression, () => postScheduledStatus(post));
@@ -142,6 +143,13 @@ async function startScheduler() {
       for (const post of dueGroupPosts) await postScheduledGroupPost(post);
     } catch (err) {
       logger.error({ err }, 'Error checking due one-off group posts');
+    }
+
+    try {
+      const dueStatusPosts = await getDueOneOffStatusPosts();
+      for (const post of dueStatusPosts) await postScheduledStatus(post);
+    } catch (err) {
+      logger.error({ err }, 'Error checking due one-off status posts');
     }
   });
 

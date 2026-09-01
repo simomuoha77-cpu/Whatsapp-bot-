@@ -10,10 +10,15 @@ if (!fs.existsSync(SCHEDULED_MEDIA_ROOT)) fs.mkdirSync(SCHEDULED_MEDIA_ROOT, { r
 
 const ALLOWED_MIME_TO_TYPE = {
   'image/jpeg': 'image',
+  'image/jpg': 'image', // some Android pickers report this non-standard variant instead of image/jpeg
   'image/png': 'image',
   'image/webp': 'image',
+  'image/heic': 'image',
+  'image/heif': 'image',
   'video/mp4': 'video',
   'video/3gpp': 'video',
+  'video/quicktime': 'video',
+  'video/webm': 'video',
 };
 
 function sanitizeFilenamePart(s) {

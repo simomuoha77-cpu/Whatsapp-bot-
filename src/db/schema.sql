@@ -125,7 +125,8 @@ CREATE TABLE IF NOT EXISTS command_logs (
 CREATE TABLE IF NOT EXISTS scheduled_status_posts (
   id SERIAL PRIMARY KEY,
   bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  cron_expression TEXT NOT NULL,
+  cron_expression TEXT, -- daily recurring; exactly one of this or run_at is set
+  run_at TIMESTAMPTZ,   -- one-off; exactly one of this or cron_expression is set
   caption TEXT,
   media_path TEXT,
   media_type TEXT, -- 'image' | 'video' | null (text-only)
