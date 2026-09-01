@@ -21,7 +21,13 @@ const { getContactsForBot, manuallyAddContact } = require('../db/contacts');
 const { getThreadForContact, deleteThread, getRecentChatsForBot } = require('../db/messages');
 const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
 const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
+const {
+  getScheduledGroupPostsForBot,
+  createScheduledGroupPost,
+  deactivateScheduledGroupPost,
+} = require('../db/scheduledGroupPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
+const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
 const { getRecentCapturesForBot } = require('../db/deletedCaptures');
 const { getStatusSavesForBot } = require('../db/statusSaves');
@@ -243,6 +249,7 @@ function createAdminRoutes() {
     const contacts = await getContactsForBot(botId, 200);
     const recentChats = await getRecentChatsForBot(botId, 50);
     const posts = await getScheduledStatusPostsForBot(botId);
+    const groupPosts = await getScheduledGroupPostsForBot(botId);
     const reminders = await getRemindersForBot(botId);
     const viewOnceCaptures = await getViewOnceCapturesForBot(botId, 20);
     const subscription = await getSubscription(botId);
@@ -356,8 +363,16 @@ function createAdminRoutes() {
     const postRows = posts.map((p) => `
       <div class="row">
         <span class="pill ${p.is_active ? 'on' : 'off'}">${p.is_active ? 'ACTIVE' : 'OFF'}</span>
-        <span>${p.cron_expression} — "${p.caption}"</span>
+        <span>${p.cron_expression}${p.media_path ? ` ${p.media_type === 'video' ? '🎥' : '📷'}` : ''} — "${p.caption || ''}"</span>
         ${p.is_active ? `<form method="POST" action="/admin/bot/${botId}/scheduled-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
+      </div>
+    `).join('') || '<p>None scheduled.</p>';
+
+    const groupPostRows = groupPosts.map((p) => `
+      <div class="row">
+        <span class="pill ${p.is_active ? 'on' : 'off'}">${p.is_active ? 'ACTIVE' : 'OFF'}</span>
+        <span>${p.cron_expression ? 'Daily ' + p.cron_expression : new Date(p.run_at).toLocaleString()}${p.media_path ? ` ${p.media_type === 'video' ? '🎥' : '📷'}` : ''} → ${p.group_name || p.group_jid} — "${p.caption || ''}"</span>
+        ${p.is_active ? `<form method="POST" action="/admin/bot/${botId}/group-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
       </div>
     `).join('') || '<p>None scheduled.</p>';
 
@@ -558,12 +573,31 @@ function createAdminRoutes() {
 
       <div class="card">
         <h3>Scheduled status posts</h3>
+        <p><small>Daily at a fixed time. Attach an image/video, add a caption, or both.</small></p>
         ${postRows}
-        <form method="POST" action="/admin/bot/${botId}/scheduled-posts">
+        <form method="POST" action="/admin/bot/${botId}/scheduled-posts" enctype="multipart/form-data">
           <input name="time" placeholder="HH:MM" required />
-          <input name="caption" placeholder="Caption to post" required />
+          <input name="caption" placeholder="Caption (optional if attaching media)" />
+          <input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4" />
           <button type="submit">Schedule</button>
         </form>
+      </div>
+
+      <div class="card">
+        <h3>Group auto-posts</h3>
+        <p><small>Post to a group the bot is in — either daily at a fixed time, or once on a specific date. Attach an image/video, add a caption, or both.</small></p>
+        ${groupPostRows}
+        ${botGroups.length > 0 ? `
+          <form method="POST" action="/admin/bot/${botId}/group-posts" enctype="multipart/form-data">
+            <select name="groupId" required>
+              ${botGroups.map((g) => `<option value="${g.id}">${g.subject}</option>`).join('')}
+            </select>
+            <input name="time" placeholder="HH:MM (daily) or YYYY-MM-DDTHH:MM (once)" required />
+            <input name="caption" placeholder="Caption (optional if attaching media)" />
+            <input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4" />
+            <button type="submit">Schedule</button>
+          </form>
+        ` : '<p>Bot must be connected and in at least one group.</p>'}
       </div>
 
       <div class="card">
@@ -965,10 +999,24 @@ function createAdminRoutes() {
 
   router.post('/bot/:id/scheduled-posts', async (req, res) => {
     const botId = parseInt(req.params.id, 10);
+    try {
+      await handleScheduledMediaUpload(req, res);
+    } catch (err) {
+      logger.warn({ err, botId }, 'Scheduled status post media upload rejected');
+      return res.redirect(`/admin/bot/${botId}`);
+    }
+
     const match = /^(\d{1,2}):(\d{2})$/.exec(req.body.time || '');
-    if (match) {
+    const caption = (req.body.caption || '').trim();
+    if (match && (caption || req.file)) {
       const cronExpression = `${parseInt(match[2], 10)} ${parseInt(match[1], 10)} * * *`;
-      await createScheduledStatusPost({ botId, cronExpression, caption: req.body.caption });
+      await createScheduledStatusPost({
+        botId,
+        cronExpression,
+        caption: caption || null,
+        mediaPath: req.file ? req.file.path : null,
+        mediaType: mediaTypeForFile(req.file),
+      });
       await refreshScheduler();
     }
     res.redirect(`/admin/bot/${botId}`);
@@ -976,6 +1024,59 @@ function createAdminRoutes() {
 
   router.post('/bot/:id/scheduled-posts/:postId/cancel', async (req, res) => {
     await deactivateScheduledStatusPost(parseInt(req.params.postId, 10));
+    await refreshScheduler();
+    res.redirect(`/admin/bot/${req.params.id}`);
+  });
+
+  router.post('/bot/:id/group-posts', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    try {
+      await handleScheduledMediaUpload(req, res);
+    } catch (err) {
+      logger.warn({ err, botId }, 'Group post media upload rejected');
+      return res.redirect(`/admin/bot/${botId}`);
+    }
+
+    const groupJid = (req.body.groupId || '').trim();
+    const caption = (req.body.caption || '').trim();
+    if (!groupJid || !(caption || req.file)) {
+      return res.redirect(`/admin/bot/${botId}`);
+    }
+
+    const live = getBotState(botId);
+    let groupName = null;
+    if (live && live.sock && live.status === 'connected') {
+      const metadata = await live.sock.groupMetadata(groupJid).catch(() => null);
+      groupName = metadata?.subject || null;
+    }
+
+    const dailyMatch = /^(\d{1,2}):(\d{2})$/.exec(req.body.time || '');
+    const payload = {
+      botId,
+      groupJid,
+      groupName,
+      caption: caption || null,
+      mediaPath: req.file ? req.file.path : null,
+      mediaType: mediaTypeForFile(req.file),
+    };
+
+    if (dailyMatch) {
+      payload.cronExpression = `${parseInt(dailyMatch[2], 10)} ${parseInt(dailyMatch[1], 10)} * * *`;
+      await createScheduledGroupPost(payload);
+      await refreshScheduler();
+    } else {
+      const date = new Date(req.body.time);
+      if (!isNaN(date.getTime())) {
+        payload.runAt = date.toISOString();
+        await createScheduledGroupPost(payload);
+        await refreshScheduler();
+      }
+    }
+    res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/group-posts/:postId/cancel', async (req, res) => {
+    await deactivateScheduledGroupPost(parseInt(req.params.postId, 10));
     await refreshScheduler();
     res.redirect(`/admin/bot/${req.params.id}`);
   });

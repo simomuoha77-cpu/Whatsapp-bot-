@@ -1,6 +1,6 @@
 const { getDb, nextSequence } = require('./mongo');
 
-async function createScheduledStatusPost({ botId, cronExpression, caption, mediaPath }) {
+async function createScheduledStatusPost({ botId, cronExpression, caption, mediaPath, mediaType }) {
   const db = await getDb();
   const id = await nextSequence('scheduled_status_posts');
   const doc = {
@@ -9,6 +9,7 @@ async function createScheduledStatusPost({ botId, cronExpression, caption, media
     cron_expression: cronExpression,
     caption: caption || null,
     media_path: mediaPath || null,
+    media_type: mediaType || null,
     is_active: true,
     last_run_at: null,
     created_at: new Date(),

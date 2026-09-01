@@ -128,6 +128,25 @@ CREATE TABLE IF NOT EXISTS scheduled_status_posts (
   cron_expression TEXT NOT NULL,
   caption TEXT,
   media_path TEXT,
+  media_type TEXT, -- 'image' | 'video' | null (text-only)
+  is_active BOOLEAN DEFAULT TRUE,
+  last_run_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Auto-posts to a specific WhatsApp group, either daily at a fixed time
+-- (cron_expression) or once at a specific date/time (run_at) — mirrors the
+-- recurring-vs-one-off split already used by reminders below.
+CREATE TABLE IF NOT EXISTS scheduled_group_posts (
+  id SERIAL PRIMARY KEY,
+  bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  group_jid TEXT NOT NULL,
+  group_name TEXT,
+  caption TEXT,
+  media_path TEXT,
+  media_type TEXT, -- 'image' | 'video' | null (text-only)
+  cron_expression TEXT,
+  run_at TIMESTAMPTZ,
   is_active BOOLEAN DEFAULT TRUE,
   last_run_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW()
