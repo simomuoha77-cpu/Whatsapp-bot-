@@ -63,7 +63,13 @@ function layout(title, body) {
           code { background: #1c1c1c; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
         </style>
       </head>
-      <body>${body}</body>
+      <body>${body}
+        <script>
+          document.querySelectorAll('.tz-input').forEach((el) => {
+            try { el.value = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) {}
+          });
+        </script>
+      </body>
     </html>
   `;
 }
@@ -580,6 +586,7 @@ function createAdminRoutes() {
         <form method="POST" action="/admin/bot/${botId}/scheduled-posts" enctype="multipart/form-data">
           <label><small>Time</small><input type="time" name="time" required /></label>
           <label><small>Date (optional — leave blank to repeat every day)</small><input type="date" name="date" /></label>
+          <input type="hidden" name="timezone" class="tz-input" />
           <label><small>Caption</small><input name="caption" placeholder="Optional if attaching media" /></label>
           <label><small>Media (optional)</small><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4" /></label>
           <button type="submit">Schedule</button>
@@ -600,6 +607,7 @@ function createAdminRoutes() {
             </label>
             <label><small>Time</small><input type="time" name="time" required /></label>
             <label><small>Date (optional — leave blank to repeat every day)</small><input type="date" name="date" /></label>
+          <input type="hidden" name="timezone" class="tz-input" />
             <label><small>Caption</small><input name="caption" placeholder="Optional if attaching media" /></label>
             <label><small>Media (optional)</small><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4" /></label>
             <button type="submit">Schedule</button>
@@ -1018,7 +1026,7 @@ function createAdminRoutes() {
       if (!caption && !req.file) {
         return res.redirect(`/admin/bot/${botId}?postError=${encodeURIComponent('Add a caption or attach media.')}`);
       }
-      const { cronExpression, runAt, error } = resolveSchedule(req.body.time, req.body.date);
+      const { cronExpression, runAt, timezone, error } = resolveSchedule(req.body.time, req.body.date, req.body.timezone);
       if (error) {
         return res.redirect(`/admin/bot/${botId}?postError=${encodeURIComponent(error)}`);
       }
@@ -1026,6 +1034,7 @@ function createAdminRoutes() {
         botId,
         cronExpression,
         runAt,
+        timezone,
         caption: caption || null,
         mediaPath: req.file ? req.file.path : null,
         mediaType: mediaTypeForFile(req.file),
@@ -1062,7 +1071,7 @@ function createAdminRoutes() {
       if (!caption && !req.file) {
         return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent('Add a caption or attach media.')}`);
       }
-      const { cronExpression, runAt, error } = resolveSchedule(req.body.time, req.body.date);
+      const { cronExpression, runAt, timezone, error } = resolveSchedule(req.body.time, req.body.date, req.body.timezone);
       if (error) {
         return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent(error)}`);
       }
@@ -1080,6 +1089,7 @@ function createAdminRoutes() {
         groupName,
         cronExpression,
         runAt,
+        timezone,
         caption: caption || null,
         mediaPath: req.file ? req.file.path : null,
         mediaType: mediaTypeForFile(req.file),

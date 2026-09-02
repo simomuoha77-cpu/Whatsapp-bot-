@@ -110,14 +110,14 @@ async function startScheduler() {
   const posts = await getActiveRecurringStatusPosts();
   for (const post of posts) {
     if (!cron.validate(post.cron_expression)) continue;
-    const job = cron.schedule(post.cron_expression, () => postScheduledStatus(post));
+    const job = cron.schedule(post.cron_expression, () => postScheduledStatus(post), { timezone: post.timezone || 'UTC' });
     activeJobs.set(`status:${post.id}`, job);
   }
 
   const recurringGroupPosts = await getActiveRecurringGroupPosts();
   for (const post of recurringGroupPosts) {
     if (!cron.validate(post.cron_expression)) continue;
-    const job = cron.schedule(post.cron_expression, () => postScheduledGroupPost(post));
+    const job = cron.schedule(post.cron_expression, () => postScheduledGroupPost(post), { timezone: post.timezone || 'UTC' });
     activeJobs.set(`group:${post.id}`, job);
   }
 

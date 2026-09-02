@@ -12,6 +12,7 @@ async function createScheduledGroupPost({
   mediaType,
   cronExpression,
   runAt,
+  timezone,
 }) {
   const db = await getDb();
   const id = await nextSequence('scheduled_group_posts');
@@ -25,6 +26,7 @@ async function createScheduledGroupPost({
     media_type: mediaType || null,
     cron_expression: cronExpression || null,
     run_at: runAt || null,
+    timezone: timezone || 'UTC',
     is_active: true,
     last_run_at: null,
     created_at: new Date(),

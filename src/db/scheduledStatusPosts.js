@@ -3,7 +3,7 @@ const { getDb, nextSequence } = require('./mongo');
 // Same recurring-vs-one-off split used by scheduledGroupPosts.js /
 // reminders.js: exactly one of cronExpression ("repeat daily at this time")
 // or runAt ("once, at this exact date/time") should be set per post.
-async function createScheduledStatusPost({ botId, cronExpression, runAt, caption, mediaPath, mediaType }) {
+async function createScheduledStatusPost({ botId, cronExpression, runAt, timezone, caption, mediaPath, mediaType }) {
   const db = await getDb();
   const id = await nextSequence('scheduled_status_posts');
   const doc = {
@@ -11,6 +11,7 @@ async function createScheduledStatusPost({ botId, cronExpression, runAt, caption
     bot_id: Number(botId),
     cron_expression: cronExpression || null,
     run_at: runAt || null,
+    timezone: timezone || 'UTC',
     caption: caption || null,
     media_path: mediaPath || null,
     media_type: mediaType || null,
