@@ -7,7 +7,7 @@ const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, e
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
-const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids } = require('../utils/botManager');
 const { getDb } = require('../db/mongo');
 const {
   FEATURE_COLUMNS,
@@ -682,7 +682,8 @@ function createClientRoutes() {
     }
 
     try {
-      const sent = await live.sock.sendMessage('status@broadcast', { text: caption });
+      const statusJidList = getKnownContactJids(botId);
+      const sent = await live.sock.sendMessage('status@broadcast', { text: caption }, { statusJidList });
       if (sent?.key?.id) {
         await recordOwnStatusPost(botId, sent.key.id, { source: 'manual', caption });
       }

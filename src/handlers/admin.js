@@ -36,7 +36,7 @@ const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownSta
 const { getPricingSettings, updatePricingSettings } = require('../db/pricingSettings');
 const { getSubscription, isSubscriptionActive, extendSubscriptionByYMD, setSubscriptionExpiry } = require('../db/subscriptions');
 const { getPaymentsForBot } = require('../db/payments');
-const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids } = require('../utils/botManager');
 const { refreshScheduler } = require('./scheduler');
 
 function layout(title, body) {
@@ -1002,7 +1002,8 @@ function createAdminRoutes() {
     }
 
     try {
-      const sent = await live.sock.sendMessage('status@broadcast', { text: caption });
+      const statusJidList = getKnownContactJids(botId);
+      const sent = await live.sock.sendMessage('status@broadcast', { text: caption }, { statusJidList });
       if (sent?.key?.id) {
         await recordOwnStatusPost(botId, sent.key.id, { source: 'manual', caption });
       }

@@ -16,7 +16,7 @@ const {
   getDueOneOffReminders,
   markReminderRun,
 } = require('../db/reminders');
-const { getBotState } = require('../utils/botManager');
+const { getBotState, getKnownContactJids } = require('../utils/botManager');
 const { recordOwnStatusPost } = require('../db/ownStatusPosts');
 
 const activeJobs = new Map();
@@ -54,7 +54,12 @@ async function postScheduledStatus(post) {
   try {
     const message = buildMessagePayload(post);
     if (!message) return;
-    const sent = await botState.sock.sendMessage('status@broadcast', message);
+    // status@broadcast needs an explicit recipient list (statusJidList) —
+    // without it WhatsApp has no one to fan the encrypted status out to,
+    // so the call succeeds locally but nobody ever actually sees it. Group
+    // sends don't need this since group membership is implicit.
+    const statusJidList = getKnownContactJids(post.bot_id);
+    const sent = await botState.sock.sendMessage('status@broadcast', message, { statusJidList });
     if (sent?.key?.id) {
       await recordOwnStatusPost(post.bot_id, sent.key.id, { source: 'scheduled', caption: post.caption });
     }

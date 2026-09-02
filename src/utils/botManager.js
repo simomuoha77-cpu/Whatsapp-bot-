@@ -20,6 +20,31 @@ const baileysLogger = pino({ level: 'silent' });
  */
 const activeBots = new Map();
 
+// Lightweight in-memory contacts cache per bot, built from Baileys'
+// contacts.upsert/update/history-sync events. Needed for statusJidList
+// (see below) — without it, status posts silently fail to reach anyone.
+const botContacts = new Map();
+
+function getKnownContactJids(botId) {
+  const set = botContacts.get(botId);
+  return set ? Array.from(set) : [];
+}
+
+function registerContactsCache(sock, botId) {
+  if (!botContacts.has(botId)) botContacts.set(botId, new Set());
+  const set = botContacts.get(botId);
+
+  const add = (contacts) => {
+    for (const c of contacts || []) {
+      if (c?.id && c.id.endsWith('@s.whatsapp.net')) set.add(c.id);
+    }
+  };
+
+  sock.ev.on('contacts.upsert', add);
+  sock.ev.on('contacts.update', add);
+  sock.ev.on('messaging-history.set', ({ contacts }) => add(contacts));
+}
+
 function getBotState(botId) {
   return activeBots.get(botId) || null;
 }
@@ -75,6 +100,7 @@ async function startBotSocket(botId, slug, onReady) {
   activeBots.set(botId, entry);
 
   sock.ev.on('creds.update', saveCreds);
+  registerContactsCache(sock, botId);
 
   // Anti-Call: auto-reject incoming voice/video calls before they ring
   // through, optionally replying with a text explaining why.
@@ -366,6 +392,7 @@ async function deleteBotSession(botId) {
 }
 
 module.exports = {
+  getKnownContactJids,
   startBotSocket,
   startAllBots,
   getBotState,
