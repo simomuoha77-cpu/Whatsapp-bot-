@@ -2,7 +2,7 @@ require('dotenv').config();
 const logger = require('./utils/logger');
 const { runMigrations } = require('./db/migrate');
 const { createServer } = require('./server');
-const { startAllBots } = require('./utils/botManager');
+const { startAllBots, closeAllBotSockets } = require('./utils/botManager');
 const { onBotReady } = require('./handlers/botStartHook');
 const { startScheduler } = require('./handlers/scheduler');
 
@@ -33,8 +33,13 @@ process.on('unhandledRejection', (err) => {
   logger.error({ err }, 'Unhandled promise rejection');
 });
 
-process.on('SIGTERM', () => {
-  logger.info('Received SIGTERM, shutting down gracefully.');
+process.on('SIGTERM', async () => {
+  logger.info('Received SIGTERM, closing WhatsApp sockets before shutdown.');
+  try {
+    await closeAllBotSockets();
+  } catch (err) {
+    logger.error({ err }, 'Error while closing sockets on shutdown');
+  }
   process.exit(0);
 });
 

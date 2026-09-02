@@ -600,8 +600,8 @@ function createAdminRoutes() {
         ${groupPostRows}
         ${botGroups.length > 0 ? `
           <form method="POST" action="/admin/bot/${botId}/group-posts" enctype="multipart/form-data">
-            <label><small>Group</small>
-              <select name="groupId" required>
+            <label><small>Group(s) — tap to select, tap again to add more</small>
+              <select name="groupId" multiple required size="${Math.min(botGroups.length, 6)}">
                 ${botGroups.map((g) => `<option value="${g.id}">${g.subject}</option>`).join('')}
               </select>
             </label>
@@ -1066,10 +1066,10 @@ function createAdminRoutes() {
     }
 
     try {
-      const groupJid = (req.body.groupId || '').trim();
+      const groupJids = [].concat(req.body.groupId || []).map((g) => g.trim()).filter(Boolean);
       const caption = (req.body.caption || '').trim();
-      if (!groupJid) {
-        return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent('Pick a group.')}`);
+      if (groupJids.length === 0) {
+        return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent('Pick at least one group.')}`);
       }
       if (!caption && !req.file) {
         return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent('Add a caption or attach media.')}`);
@@ -1080,23 +1080,26 @@ function createAdminRoutes() {
       }
 
       const live = getBotState(botId);
-      let groupName = null;
-      if (live && live.sock && live.status === 'connected') {
-        const metadata = await live.sock.groupMetadata(groupJid).catch(() => null);
-        groupName = metadata?.subject || null;
+      // One post per selected group — same time/caption/media, but each is
+      // independently cancelable afterward.
+      for (const groupJid of groupJids) {
+        let groupName = null;
+        if (live && live.sock && live.status === 'connected') {
+          const metadata = await live.sock.groupMetadata(groupJid).catch(() => null);
+          groupName = metadata?.subject || null;
+        }
+        await createScheduledGroupPost({
+          botId,
+          groupJid,
+          groupName,
+          cronExpression,
+          runAt,
+          timezone,
+          caption: caption || null,
+          mediaPath: req.file ? req.file.path : null,
+          mediaType: mediaTypeForFile(req.file),
+        });
       }
-
-      await createScheduledGroupPost({
-        botId,
-        groupJid,
-        groupName,
-        cronExpression,
-        runAt,
-        timezone,
-        caption: caption || null,
-        mediaPath: req.file ? req.file.path : null,
-        mediaType: mediaTypeForFile(req.file),
-      });
       await refreshScheduler();
     } catch (err) {
       logger.error({ err, botId }, 'Failed to create scheduled group post');

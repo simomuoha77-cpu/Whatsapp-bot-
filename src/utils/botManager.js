@@ -391,6 +391,26 @@ async function deleteBotSession(botId) {
   await clearMongoAuthState(botId);
 }
 
+/**
+ * Closes every live WhatsApp socket cleanly. Critical on redeploy: if the
+ * old process's socket is still open when the new process connects with the
+ * SAME session, WhatsApp briefly has two live connections decrypting
+ * messages independently. Their local Signal ratchet counters then diverge
+ * and get overwritten unpredictably in Mongo — producing exactly the
+ * "SessionError: Over 2000 messages into the future!" corruption. Without
+ * this, every redeploy is a chance to corrupt a session; this closes that
+ * window.
+ */
+async function closeAllBotSockets() {
+  for (const [botId, entry] of activeBots.entries()) {
+    try {
+      entry.sock?.end(undefined);
+    } catch (err) {
+      logger.warn({ err, botId }, 'Error closing socket during shutdown');
+    }
+  }
+}
+
 module.exports = {
   getKnownContactJids,
   startBotSocket,
@@ -399,5 +419,6 @@ module.exports = {
   getAllBotStates,
   requestPairingCodeForBot,
   deleteBotSession,
+  closeAllBotSockets,
   enqueueConnect,
 };
