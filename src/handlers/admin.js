@@ -1002,8 +1002,10 @@ function createAdminRoutes() {
     }
 
     try {
-      const statusJidList = getKnownContactJids(botId);
-      const sent = await live.sock.sendMessage('status@broadcast', { text: caption }, { statusJidList });
+      // See scheduler.js for why an empty statusJidList is worse than omitting it.
+      const knownContacts = getKnownContactJids(botId);
+      const sendOpts = knownContacts.length > 0 ? { statusJidList: knownContacts } : undefined;
+      const sent = await live.sock.sendMessage('status@broadcast', { text: caption }, sendOpts);
       if (sent?.key?.id) {
         await recordOwnStatusPost(botId, sent.key.id, { source: 'manual', caption });
       }
