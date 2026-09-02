@@ -54,6 +54,11 @@ function layout(title, body) {
           button { background: #2563eb; color: white; cursor: pointer; border: none; }
           button.danger { background: #dc2626; }
           .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+          .group-checklist { max-height: 260px; overflow-y: auto; border: 1px solid #2a2a2a; border-radius: 8px; margin-bottom: 10px; }
+          .group-check-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #2a2a2a; cursor: pointer; }
+          .group-check-row:last-child { border-bottom: none; }
+          .group-check-row input[type="checkbox"] { width: 18px; height: 18px; flex-shrink: 0; }
+          .group-check-row.disabled { opacity: 0.5; cursor: not-allowed; }
           .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #2a2a2a; gap: 8px; flex-wrap: wrap; }
           .row:last-child { border-bottom: none; }
           nav { margin-bottom: 20px; }
@@ -614,11 +619,15 @@ function createAdminRoutes() {
         ${groupPostRows}
         ${botGroups.length > 0 ? `
           <form method="POST" action="/admin/bot/${botId}/group-posts" enctype="multipart/form-data">
-            <label><small>Group(s) — tap to select, tap again to add more. 🔒 = admins-only group; the bot must be a group admin there to post.</small>
-              <select name="groupId" multiple required size="${Math.min(botGroups.length, 6)}">
-                ${botGroups.map((g) => `<option value="${g.id}" ${g.canPost ? '' : 'disabled'}>${g.subject}${g.announce ? (g.isBotAdmin ? ' 🔒✅' : ' 🔒 (bot not admin — can\'t post)') : ''}</option>`).join('')}
-              </select>
-            </label>
+            <label><small>Group(s) — tap each one you want to include. 🔒 = admins-only group; the bot must be a group admin there to post.</small></label>
+            <div class="group-checklist">
+              ${botGroups.map((g) => `
+                <label class="group-check-row${g.canPost ? '' : ' disabled'}">
+                  <input type="checkbox" name="groupId" value="${g.id}" ${g.canPost ? '' : 'disabled'} />
+                  <span>${g.subject}${g.announce ? (g.isBotAdmin ? ' 🔒✅' : ' 🔒 (bot not admin — can\'t post)') : ''}</span>
+                </label>
+              `).join('')}
+            </div>
             <label><small>Time</small><input type="time" name="time" required /></label>
             <label><small>Date (optional — leave blank to repeat every day)</small><input type="date" name="date" /></label>
           <input type="hidden" name="timezone" class="tz-input" />
@@ -1022,7 +1031,7 @@ function createAdminRoutes() {
       await setBotDisplayName(botId, displayName);
     } catch (err) {
       logger.error({ err, botId }, 'Failed to update bot profile name');
-      return res.redirect(`/admin/bot/${botId}?nameError=${encodeURIComponent('WhatsApp rejected that name — try again in a moment.')}`);
+      return res.redirect(`/admin/bot/${botId}?nameError=${encodeURIComponent('Failed: ' + (err.message || 'unknown error') + ' — check server logs for details.')}`);
     }
     res.redirect(`/admin/bot/${botId}?nameSuccess=1`);
   });
