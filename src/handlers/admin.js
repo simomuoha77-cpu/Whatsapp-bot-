@@ -1,7 +1,7 @@
 const express = require('express');
 const logger = require('../utils/logger');
 const { verifyCredentials, requirePlatformAuth } = require('../utils/platformAuth');
-const { createBot, getAllBots, getBotById, deleteBot, renameBot } = require('../db/bots');
+const { createBot, getAllBots, getBotById, deleteBot, renameBot, setBotDisplayName } = require('../db/bots');
 const {
   FEATURE_COLUMNS,
   FEATURE_LABELS,
@@ -581,6 +581,18 @@ function createAdminRoutes() {
       </div>
 
       <div class="card">
+        <h3>Bot display name</h3>
+        <p><small>Changes the WhatsApp profile name — this is what people who <b>haven't</b> saved this number in their own contacts will see. Anyone who already saved this number under a different name (e.g. "John") keeps seeing that name regardless — that's controlled by their phone's contacts, not this bot, and can't be overridden.</small></p>
+        ${req.query.nameError ? `<p style="color:#f87171;">${req.query.nameError}</p>` : ''}
+        ${req.query.nameSuccess ? `<p style="color:#4ade80;">Updated.</p>` : ''}
+        ${bot?.display_name ? `<p>Currently set to: <b>${bot.display_name}</b></p>` : ''}
+        <form method="POST" action="/admin/bot/${botId}/display-name">
+          <input name="displayName" placeholder="e.g. Titus 1" required maxlength="25" />
+          <button type="submit">Update Name</button>
+        </form>
+      </div>
+
+      <div class="card">
         <h3>Scheduled status posts</h3>
         <p><small>Pick a time. Leave date blank to repeat daily, or set a date to post once. Attach an image/video, add a caption, or both.</small></p>
         ${req.query.postError ? `<p style="color:#f87171;">${req.query.postError}</p>` : ''}
@@ -991,6 +1003,28 @@ function createAdminRoutes() {
     await db.collection('bots').updateOne({ id: Number(botId) }, { $set: { slug: newSlug, status: 'pending' } });
     await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch(() => {});
     res.redirect(`/admin/bot/${botId}`);
+  });
+
+  router.post('/bot/:id/display-name', async (req, res) => {
+    const botId = parseInt(req.params.id, 10);
+    const displayName = (req.body.displayName || '').trim();
+    if (!displayName) {
+      return res.redirect(`/admin/bot/${botId}?nameError=${encodeURIComponent('Enter a name.')}`);
+    }
+
+    const live = getBotState(botId);
+    if (!live || !live.sock || live.status !== 'connected') {
+      return res.redirect(`/admin/bot/${botId}?nameError=${encodeURIComponent("Bot isn't connected right now, so the name can't be changed.")}`);
+    }
+
+    try {
+      await live.sock.updateProfileName(displayName);
+      await setBotDisplayName(botId, displayName);
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to update bot profile name');
+      return res.redirect(`/admin/bot/${botId}?nameError=${encodeURIComponent('WhatsApp rejected that name — try again in a moment.')}`);
+    }
+    res.redirect(`/admin/bot/${botId}?nameSuccess=1`);
   });
 
   router.post('/bot/:id/post-status', async (req, res) => {

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS bots (
   client_name TEXT,                     -- label for your own reference, e.g. "Jane's Salon"
   status TEXT DEFAULT 'pending',        -- pending | qr_pending | pairing_code_pending | connected | disconnected
   phone_number TEXT,                    -- filled in once connected
+  display_name TEXT,                    -- WhatsApp profile name set via updateProfileName; only affects viewers who haven't saved this number as a contact
   created_at TIMESTAMPTZ DEFAULT NOW(),
   connected_at TIMESTAMPTZ,
   last_seen_at TIMESTAMPTZ

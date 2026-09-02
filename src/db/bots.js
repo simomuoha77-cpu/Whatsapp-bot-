@@ -96,6 +96,14 @@ async function renameBot(id, clientName) {
   await db.collection('bots').updateOne({ id: Number(id) }, { $set: { client_name: clientName } });
 }
 
+// The WhatsApp profile display name — what people who HAVEN'T saved this
+// number see. Stored just so the dashboard can show what's currently set;
+// the real source of truth is WhatsApp's own servers via updateProfileName.
+async function setBotDisplayName(id, displayName) {
+  const db = await getDb();
+  await db.collection('bots').updateOne({ id: Number(id) }, { $set: { display_name: displayName } });
+}
+
 module.exports = {
   createBot,
   getBotBySlug,
@@ -103,4 +111,5 @@ module.exports = {
   getAllBots,
   deleteBot,
   renameBot,
+  setBotDisplayName,
 };

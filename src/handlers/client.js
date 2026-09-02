@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { requireClientAuth } = require('../utils/clientAuth');
-const { createBot, getBotById } = require('../db/bots');
+const { createBot, getBotById, setBotDisplayName } = require('../db/bots');
 const { createClientAccount, verifyClientLogin, getClientAccountByPhone, getClientAccountByBotId, getClientAccountByReferralCode, countReferrals } = require('../db/clientAccounts');
 const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, extendSubscriptionByYMD } = require('../db/subscriptions');
 const { getPricingSettings } = require('../db/pricingSettings');
@@ -598,6 +598,18 @@ function createClientRoutes() {
       </div>
 
       <div class="card">
+        <h3>🪪 Bot display name</h3>
+        <p><small>Changes the WhatsApp profile name — this is what people who <b>haven't</b> saved this number in their own contacts will see. If someone already saved this number under a different name (e.g. "John"), they'll keep seeing that name no matter what — that's controlled by their phone, not this bot, and nothing can override it.</small></p>
+        ${req.query.nameError ? `<p style="color:#f87171;">${req.query.nameError}</p>` : ''}
+        ${req.query.nameSuccess ? `<p style="color:#4ade80;">Updated.</p>` : ''}
+        ${bot?.display_name ? `<p>Currently set to: <b>${bot.display_name}</b></p>` : ''}
+        <form method="POST" action="/client/settings/display-name">
+          <input name="displayName" placeholder="e.g. Titus 1" required maxlength="25" />
+          <button type="submit">Update Name</button>
+        </form>
+      </div>
+
+      <div class="card">
         <h3>⏰ Scheduled status posts</h3>
         <p><small>Pick a time. Leave date blank to repeat daily, or set a date to post once. Attach an image/video, add a caption, or both.</small></p>
         ${req.query.postError ? `<p style="color:#f87171;">${req.query.postError}</p>` : ''}
@@ -670,6 +682,28 @@ function createClientRoutes() {
       </div>
       ${TOGGLE_AUTOSUBMIT_JS}
     `));
+  });
+
+  router.post('/settings/display-name', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const displayName = (req.body.displayName || '').trim();
+    if (!displayName) {
+      return res.redirect(`/client/dashboard?nameError=${encodeURIComponent('Enter a name.')}`);
+    }
+
+    const live = getBotState(botId);
+    if (!live || !live.sock || live.status !== 'connected') {
+      return res.redirect(`/client/dashboard?nameError=${encodeURIComponent("Bot isn't connected right now, so the name can't be changed.")}`);
+    }
+
+    try {
+      await live.sock.updateProfileName(displayName);
+      await setBotDisplayName(botId, displayName);
+    } catch (err) {
+      logger.error({ err, botId }, 'Failed to update bot profile name');
+      return res.redirect(`/client/dashboard?nameError=${encodeURIComponent('WhatsApp rejected that name — try again in a moment.')}`);
+    }
+    res.redirect('/client/dashboard?nameSuccess=1');
   });
 
   router.post('/settings/post-status', async (req, res) => {
