@@ -39,6 +39,8 @@ const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids } = require('../utils/botManager');
 const { refreshScheduler } = require('./scheduler');
 
+const { annotateGroupPermissions, jidNumber } = require('../utils/groupPermissions');
+
 function layout(title, body) {
   return `
     <html>
@@ -248,7 +250,7 @@ function createAdminRoutes() {
     if (live && live.sock && live.status === 'connected') {
       try {
         const groupsObj = await live.sock.groupFetchAllParticipating();
-        botGroups = Object.values(groupsObj).map((g) => ({ id: g.id, subject: g.subject }));
+        botGroups = annotateGroupPermissions(groupsObj, live.sock.user?.id);
       } catch (err) {
         logger.warn({ err, botId }, 'Failed to fetch participating groups');
       }
@@ -600,9 +602,9 @@ function createAdminRoutes() {
         ${groupPostRows}
         ${botGroups.length > 0 ? `
           <form method="POST" action="/admin/bot/${botId}/group-posts" enctype="multipart/form-data">
-            <label><small>Group(s) — tap to select, tap again to add more</small>
+            <label><small>Group(s) — tap to select, tap again to add more. 🔒 = admins-only group; the bot must be a group admin there to post.</small>
               <select name="groupId" multiple required size="${Math.min(botGroups.length, 6)}">
-                ${botGroups.map((g) => `<option value="${g.id}">${g.subject}</option>`).join('')}
+                ${botGroups.map((g) => `<option value="${g.id}" ${g.canPost ? '' : 'disabled'}>${g.subject}${g.announce ? (g.isBotAdmin ? ' 🔒✅' : ' 🔒 (bot not admin — can\'t post)') : ''}</option>`).join('')}
               </select>
             </label>
             <label><small>Time</small><input type="time" name="time" required /></label>
@@ -1081,12 +1083,28 @@ function createAdminRoutes() {
 
       const live = getBotState(botId);
       // One post per selected group — same time/caption/media, but each is
-      // independently cancelable afterward.
+      // independently cancelable afterward. Re-check admin status fresh
+      // here too (not just trusting the disabled dropdown option) since
+      // group admin status can change between page load and submit.
+      const skipped = [];
+      let created = 0;
       for (const groupJid of groupJids) {
         let groupName = null;
+        let canPost = true;
         if (live && live.sock && live.status === 'connected') {
           const metadata = await live.sock.groupMetadata(groupJid).catch(() => null);
-          groupName = metadata?.subject || null;
+          groupName = metadata?.subject || groupJid;
+          if (metadata?.announce) {
+            const botNumber = jidNumber(live.sock.user?.id);
+            const isBotAdmin = (metadata.participants || []).some(
+              (p) => jidNumber(p.id) === botNumber && (p.admin === 'admin' || p.admin === 'superadmin')
+            );
+            canPost = isBotAdmin;
+          }
+        }
+        if (!canPost) {
+          skipped.push(groupName);
+          continue;
         }
         await createScheduledGroupPost({
           botId,
@@ -1099,6 +1117,11 @@ function createAdminRoutes() {
           mediaPath: req.file ? req.file.path : null,
           mediaType: mediaTypeForFile(req.file),
         });
+        created++;
+      }
+      if (skipped.length > 0) {
+        const msg = `Skipped ${skipped.join(', ')} — bot isn't admin there, so WhatsApp won't let it post (that group only allows admins to send).${created > 0 ? ` Scheduled the other ${created}.` : ''}`;
+        return res.redirect(`/admin/bot/${botId}?groupPostError=${encodeURIComponent(msg)}`);
       }
       await refreshScheduler();
     } catch (err) {
