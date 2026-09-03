@@ -69,9 +69,9 @@ const FEATURE_LABELS = {
 const STEALTH_READ_MODES = ['normal', 'stealth', 'no_mark'];
 
 const STEALTH_READ_MODE_LABELS = {
-  normal: 'Normal (read messages normally, sends read receipts)',
+  normal: 'Normal (like a real phone — only marked read when you open the chat yourself)',
   stealth: 'Stealth (read & auto-reply, but never send read receipts)',
-  no_mark: 'No-Mark (auto-reply works, messages never marked as read)',
+  no_mark: 'No-Mark (auto-reply works, actively forces the chat to stay unread)',
 };
 
 const AI_PROVIDERS = ['groq', 'gemini'];

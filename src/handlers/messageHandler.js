@@ -278,17 +278,22 @@ function registerMessageHandler(sock, botId) {
         if (await isBlocked(botId, sender)) continue;
 
         // Stealth Read Mode controls whether we ever tell WhatsApp this
-        // message was read. 'normal' marks it read like a regular client
-        // would. 'stealth' and 'no_mark' both skip this entirely — the bot
-        // still fully processes the message and can auto-reply, but the
-        // sender never gets the blue double-tick, only the regular grey
-        // sent/delivered ticks.
+        // message was read.
+        //
+        // 'normal' now means genuinely normal — like a real phone, it takes
+        // NO automatic action on read status at all. The bot still fully
+        // processes the message and can auto-reply, but the blue double-tick
+        // only appears once the human actually opens the chat themselves on
+        // their own device (which sends WhatsApp's own natural read receipt,
+        // completely outside this code). Previously 'normal' called
+        // readMessages() here, which marked it read instantly — before
+        // anyone had actually looked. That's the bug this fixes.
+        //
+        // 'stealth' and 'no_mark' actively force the chat to stay unread
+        // (see below) — useful if you want to browse the chat yourself on
+        // this linked session without tipping off the sender.
         if (stealthMode === 'normal') {
-          try {
-            await sock.readMessages([msg.key]);
-          } catch (err) {
-            logger.warn({ err, botId, sender }, 'Failed to mark message as read');
-          }
+          // Intentionally does nothing — see comment above.
         } else {
           // Explicitly force this chat to stay marked unread, rather than
           // just never calling readMessages(). This is a stronger signal
