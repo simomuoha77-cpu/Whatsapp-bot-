@@ -7,7 +7,9 @@ const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, e
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
-const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids, requestPairingCodeForBot } = require('../utils/botManager');
+const QRCode = require('qrcode');
+const { normalizePhoneNumber } = require('../utils/phoneNumber');
 const { getDb } = require('../db/mongo');
 const {
   FEATURE_COLUMNS,
@@ -280,7 +282,11 @@ function createClientRoutes() {
     const bot = await getBotById(botId);
     const live = getBotState(botId);
     const connectionStatus = live?.status || bot?.status || 'pending';
-    const onboardingUrl = bot ? `${req.protocol}://${req.get('host')}/connect/${bot.slug}` : null;
+    // Only generated once a QR has actually appeared — that's proof the
+    // socket survived its WhatsApp handshake, which is the exact thing
+    // that has to be true before a pairing-code request is safe to make.
+    const qrDataUrl = live?.qr ? await QRCode.toDataURL(live.qr, { width: 280 }) : null;
+    const awaitingConnection = connectionStatus !== 'connected' && !!live;
     const sub = await getSubscription(botId);
     const active = await isSubscriptionActive(botId);
     const pricing = await getPricingSettings();
@@ -394,16 +400,36 @@ function createClientRoutes() {
       <div class="card">
         <h3>📱 WhatsApp Connection</h3>
         <p><span class="pill ${connectionStatus === 'connected' ? 'on' : 'off'}">${connectionStatus.toUpperCase()}</span></p>
+        ${req.query.connError ? `<p style="color:#f87171;">${req.query.connError}</p>` : ''}
         ${connectionStatus === 'connected' ? `
-          <p><small>Your WhatsApp is linked. If you ever unlink this device from WhatsApp (Settings → Linked Devices), come back here and tap the button below to get a fresh link to reconnect.</small></p>
+          <p><small>Your WhatsApp is linked. If you ever unlink this device from WhatsApp (Settings → Linked Devices), tap "Start Connection" below to reconnect — right here, no separate link needed.</small></p>
+          <details style="margin-top:8px;">
+            <summary style="cursor:pointer;"><small>Reconnect / link a different session</small></summary>
+            <form method="POST" action="/client/settings/start-qr" style="margin-top:10px;">
+              <button type="submit">Start Connection</button>
+            </form>
+          </details>
+        ` : qrDataUrl ? `
+          <p><small>Scan with WhatsApp: Settings → Linked Devices → Link a Device</small></p>
+          <img src="${qrDataUrl}" style="max-width:100%;border-radius:10px;display:block;margin:10px 0;" />
+          <p><small>Refreshes on its own — codes expire after about 20 seconds and a new one is issued automatically.</small></p>
+          <details>
+            <summary style="cursor:pointer;"><small>Prefer a pairing code instead?</small></summary>
+            <form method="POST" action="/client/settings/start-pairing" style="margin-top:10px;">
+              <input name="number" placeholder="Your WhatsApp number, e.g. 254712345678" required />
+              <button type="submit">Get Pairing Code</button>
+            </form>
+          </details>
+        ` : live?.pairingCode ? `
+          <p><small>On WhatsApp: Settings → Linked Devices → Link a Device → Link with phone number instead — then enter this code.</small></p>
+          <h1 style="letter-spacing:6px;text-align:center;margin:16px 0;">${live.pairingCode}</h1>
         ` : `
-          <p><small>Your bot isn't connected right now. Use the link below to scan a QR code or enter a pairing code with the same WhatsApp number you registered with.</small></p>
+          <p><small>Connect your WhatsApp right here — no separate link needed.</small></p>
+          <form method="POST" action="/client/settings/start-qr">
+            <button type="submit">Start Connection</button>
+          </form>
         `}
-        ${onboardingUrl ? `<code style="display:block;margin:10px 0;word-break:break-all;">${onboardingUrl}</code>` : ''}
-        <form method="POST" action="/client/settings/regenerate-link">
-          <button type="submit">Generate new connection link</button>
-        </form>
-        <p><small>This link only works with your registered number (${req.session.clientPhoneNumber}). Generating a new one invalidates the old link.</small></p>
+        <p><small>Only works with your registered number (${req.session.clientPhoneNumber}).</small></p>
       </div>
 
       <div class="card">
@@ -690,7 +716,7 @@ function createClientRoutes() {
         `).join('') : '<p>No status posts tracked yet.</p>'}
       </div>
       ${TOGGLE_AUTOSUBMIT_JS}
-    `));
+    `, awaitingConnection ? '<meta http-equiv="refresh" content="8">' : ''));
   });
 
   router.post('/settings/display-name', async (req, res) => {
@@ -840,13 +866,9 @@ function createClientRoutes() {
     res.redirect('/client/dashboard');
   });
 
-  router.post('/settings/regenerate-link', async (req, res) => {
-    // Scoped to the logged-in client's own bot only — a client can never
-    // regenerate or obtain another client's link, since botId comes from
-    // their session, not from user input. The new slug still resolves to
-    // the same bot, so only the number registered on this account can
-    // complete pairing (the QR/pairing flow logs into that bot's own
-    // WhatsApp session).
+  router.post('/settings/start-qr', async (req, res) => {
+    // Scoped to the logged-in client's own bot only — botId comes from
+    // their session, never from user input.
     const botId = req.session.clientBotId;
     const bot = await getBotById(botId);
     if (!bot) return res.redirect('/client/dashboard');
@@ -855,8 +877,25 @@ function createClientRoutes() {
     const db = await getDb();
     await db.collection('bots').updateOne({ id: Number(botId) }, { $set: { slug: newSlug, status: 'pending' } });
     await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch((err) =>
-      logger.error({ err, botId }, 'Failed to restart bot socket on client link regeneration')
+      logger.error({ err, botId }, 'Failed to start bot socket')
     );
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/start-pairing', async (req, res) => {
+    // Only reachable from the dashboard once a QR has already rendered —
+    // that's proof this exact socket already made it through WhatsApp's
+    // handshake, which is what makes an immediate pairing-code request
+    // here safe. This is the same call, at the same point in the
+    // connection's life, that the old separate-page flow always used.
+    const botId = req.session.clientBotId;
+    const digits = normalizePhoneNumber(req.body.number);
+    if (!digits) return res.redirect('/client/dashboard');
+    const live = getBotState(botId);
+    if (!live || !live.sock) {
+      return res.redirect(`/client/dashboard?connError=${encodeURIComponent('Connection reset — tap Start Connection again first.')}`);
+    }
+    requestPairingCodeForBot(botId, digits);
     res.redirect('/client/dashboard');
   });
 
