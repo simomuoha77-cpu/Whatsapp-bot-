@@ -2,6 +2,7 @@ const express = require('express');
 const QRCode = require('qrcode');
 const { getBotBySlug } = require('../db/bots');
 const { getBotState, requestPairingCodeForBot } = require('../utils/botManager');
+const { normalizePhoneNumber } = require('../utils/phoneNumber');
 
 function layout(title, body) {
   return `
@@ -93,7 +94,7 @@ function createOnboardingRoutes() {
   router.post('/:slug/pair', async (req, res) => {
     const bot = await getBotBySlug(req.params.slug);
     if (!bot) return res.status(404).send('Invalid link.');
-    const digits = (req.body.number || '').replace(/[^0-9]/g, '');
+    const digits = normalizePhoneNumber(req.body.number);
     if (!digits) return res.status(400).send('Invalid phone number.');
     requestPairingCodeForBot(bot.id, digits);
     res.send(layout('Requesting...', `

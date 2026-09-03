@@ -9,6 +9,7 @@ const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPayme
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids, requestPairingCodeForBot } = require('../utils/botManager');
 const QRCode = require('qrcode');
+const { normalizePhoneNumber } = require('../utils/phoneNumber');
 const { getDb } = require('../db/mongo');
 const {
   FEATURE_COLUMNS,
@@ -887,7 +888,7 @@ function createClientRoutes() {
 
   router.post('/settings/start-pairing', async (req, res) => {
     const botId = req.session.clientBotId;
-    const digits = (req.body.number || '').replace(/[^0-9]/g, '');
+    const digits = normalizePhoneNumber(req.body.number);
     if (!digits) return res.redirect('/client/dashboard');
     const bot = await getBotById(botId);
     if (!bot) return res.redirect('/client/dashboard');
