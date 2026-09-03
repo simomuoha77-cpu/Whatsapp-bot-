@@ -15,7 +15,14 @@ const VIEW_DELAY_MAX_MS = parseInt(process.env.STATUS_VIEW_DELAY_MAX_MS || '3000
 // Minimum time between marking a status viewed and reacting to it — required
 // for the reaction to actually register server-side (see reactToStatus).
 // Deliberately much shorter than the old 1.5-5s anti-ban pacing delay.
-const REACT_MIN_GAP_MS = parseInt(process.env.STATUS_REACT_MIN_GAP_MS || '600', 10);
+// Minimum time between marking a status viewed and reacting to it — required
+// for the reaction to actually register server-side (see reactToStatus).
+// Reacting to your OWN status is a same-account shortcut that doesn't need
+// full server round-trip delivery, so a short gap looked fine when tested
+// that way — but reacting to someone else's status genuinely has to travel
+// through WhatsApp's servers to reach their account, which takes longer.
+// 600ms wasn't enough for that; bumped to something more realistic.
+const REACT_MIN_GAP_MS = parseInt(process.env.STATUS_REACT_MIN_GAP_MS || '2500', 10);
 
 // Baileys can redeliver the same status update multiple times (retries,
 // multi-device sync, etc.). Without deduplication, the bot would react to
@@ -154,7 +161,7 @@ async function reactToStatus(sock, msg) {
   // This is a fixed, short buffer for correctness, not pacing for
   // anti-detection — it's the minimum gap needed for the reaction to
   // actually register.
-  await randomDelay(REACT_MIN_GAP_MS, REACT_MIN_GAP_MS + 300);
+  await randomDelay(REACT_MIN_GAP_MS, REACT_MIN_GAP_MS + 800);
 
   const participant = msg.key.participant;
   const opts = participant
