@@ -7,7 +7,8 @@ const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, e
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
-const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids, requestPairingCodeForBot } = require('../utils/botManager');
+const QRCode = require('qrcode');
 const { getDb } = require('../db/mongo');
 const {
   FEATURE_COLUMNS,
@@ -45,12 +46,13 @@ const logger = require('../utils/logger');
 
 const REFERRAL_BONUS_DAYS = parseInt(process.env.REFERRAL_BONUS_DAYS || '7', 10);
 
-function layout(title, body) {
+function layout(title, body, extraHead = '') {
   return `
     <html>
       <head>
         <title>${title}</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        ${extraHead}
         <style>
           :root {
             --accent: #00a884;
@@ -280,6 +282,10 @@ function createClientRoutes() {
     const live = getBotState(botId);
     const connectionStatus = live?.status || bot?.status || 'pending';
     const onboardingUrl = bot ? `${req.protocol}://${req.get('host')}/connect/${bot.slug}` : null;
+    // Generated inline so people don't have to copy a link into a browser
+    // tab just to scan a QR code — the whole connect flow lives right here.
+    const qrDataUrl = live?.qr ? await QRCode.toDataURL(live.qr, { width: 280 }) : null;
+    const awaitingConnection = connectionStatus !== 'connected' && (qrDataUrl || live?.pairingCode);
     const sub = await getSubscription(botId);
     const active = await isSubscriptionActive(botId);
     const pricing = await getPricingSettings();
@@ -394,16 +400,38 @@ function createClientRoutes() {
         <h3>📱 WhatsApp Connection</h3>
         <p><span class="pill ${connectionStatus === 'connected' ? 'on' : 'off'}">${connectionStatus.toUpperCase()}</span></p>
         ${connectionStatus === 'connected' ? `
-          <p><small>Your WhatsApp is linked. If you ever unlink this device from WhatsApp (Settings → Linked Devices), come back here and tap the button below to get a fresh link to reconnect.</small></p>
+          <p><small>Your WhatsApp is linked. If you ever unlink this device from WhatsApp (Settings → Linked Devices), tap "Get QR Code" or "Get Pairing Code" below to reconnect — right here, no separate link needed.</small></p>
+        ` : qrDataUrl ? `
+          <p><small>Scan with WhatsApp: Settings → Linked Devices → Link a Device</small></p>
+          <img src="${qrDataUrl}" style="max-width:100%;border-radius:10px;display:block;margin:10px 0;" />
+          <p><small>This refreshes on its own. Codes expire after about 20 seconds and a new one is issued automatically.</small></p>
+        ` : live?.pairingCode ? `
+          <p><small>On WhatsApp: Settings → Linked Devices → Link a Device → Link with phone number instead — then enter this code.</small></p>
+          <h1 style="letter-spacing:6px;text-align:center;margin:16px 0;">${live.pairingCode}</h1>
         ` : `
-          <p><small>Your bot isn't connected right now. Use the link below to scan a QR code or enter a pairing code with the same WhatsApp number you registered with.</small></p>
+          <p><small>Connect your WhatsApp right here — no need to copy a link into your browser.</small></p>
         `}
-        ${onboardingUrl ? `<code style="display:block;margin:10px 0;word-break:break-all;">${onboardingUrl}</code>` : ''}
-        <form method="POST" action="/client/settings/regenerate-link">
-          <button type="submit">Generate new connection link</button>
-
-        </form>
-        <p><small>This link only works with your registered number (${req.session.clientPhoneNumber}). Generating a new one invalidates the old link.</small></p>
+        ${connectionStatus !== 'connected' ? `
+          <form method="POST" action="/client/settings/start-qr" style="margin-bottom:10px;">
+            <button type="submit">📷 Get QR Code</button>
+          </form>
+          <form method="POST" action="/client/settings/start-pairing">
+            <input name="number" placeholder="Your WhatsApp number, e.g. 254712345678" required />
+            <button type="submit">🔢 Get Pairing Code</button>
+          </form>
+        ` : `
+          <details style="margin-top:8px;">
+            <summary style="cursor:pointer;"><small>Reconnect / link a different session</small></summary>
+            <form method="POST" action="/client/settings/start-qr" style="margin:10px 0;">
+              <button type="submit">📷 Get QR Code</button>
+            </form>
+            <form method="POST" action="/client/settings/start-pairing">
+              <input name="number" placeholder="Your WhatsApp number, e.g. 254712345678" required />
+              <button type="submit">🔢 Get Pairing Code</button>
+            </form>
+          </details>
+        `}
+        <p><small>Only works with your registered number (${req.session.clientPhoneNumber}).</small></p>
       </div>
 
       <div class="card">
@@ -690,7 +718,7 @@ function createClientRoutes() {
         `).join('') : '<p>No status posts tracked yet.</p>'}
       </div>
       ${TOGGLE_AUTOSUBMIT_JS}
-    `));
+    `, awaitingConnection ? '<meta http-equiv="refresh" content="12">' : ''));
   });
 
   router.post('/settings/display-name', async (req, res) => {
@@ -840,13 +868,10 @@ function createClientRoutes() {
     res.redirect('/client/dashboard');
   });
 
-  router.post('/settings/regenerate-link', async (req, res) => {
-    // Scoped to the logged-in client's own bot only — a client can never
-    // regenerate or obtain another client's link, since botId comes from
-    // their session, not from user input. The new slug still resolves to
-    // the same bot, so only the number registered on this account can
-    // complete pairing (the QR/pairing flow logs into that bot's own
-    // WhatsApp session).
+  router.post('/settings/start-qr', async (req, res) => {
+    // Scoped to the logged-in client's own bot only — botId comes from
+    // their session, never from user input, so a client can only ever
+    // reconnect their own bot's WhatsApp session.
     const botId = req.session.clientBotId;
     const bot = await getBotById(botId);
     if (!bot) return res.redirect('/client/dashboard');
@@ -855,8 +880,28 @@ function createClientRoutes() {
     const db = await getDb();
     await db.collection('bots').updateOne({ id: Number(botId) }, { $set: { slug: newSlug, status: 'pending' } });
     await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch((err) =>
-      logger.error({ err, botId }, 'Failed to restart bot socket on client link regeneration')
+      logger.error({ err, botId }, 'Failed to start bot socket for inline QR')
     );
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/start-pairing', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const digits = (req.body.number || '').replace(/[^0-9]/g, '');
+    if (!digits) return res.redirect('/client/dashboard');
+    const bot = await getBotById(botId);
+    if (!bot) return res.redirect('/client/dashboard');
+    await deleteBotSession(botId);
+    const newSlug = crypto.randomBytes(6).toString('hex');
+    const db = await getDb();
+    await db.collection('bots').updateOne({ id: Number(botId) }, { $set: { slug: newSlug, status: 'pending' } });
+    await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch((err) =>
+      logger.error({ err, botId }, 'Failed to start bot socket for inline pairing')
+    );
+    // Socket entry now exists in memory, so this can find it and queue the
+    // pairing-code request — it fires once the connection reaches the
+    // point where WhatsApp would otherwise have shown a QR code instead.
+    requestPairingCodeForBot(botId, digits);
     res.redirect('/client/dashboard');
   });
 
