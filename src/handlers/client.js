@@ -710,7 +710,11 @@ function createClientRoutes() {
       await setBotDisplayName(botId, displayName);
     } catch (err) {
       logger.error({ err, botId }, 'Failed to update bot profile name');
-      return res.redirect(`/client/dashboard?nameError=${encodeURIComponent('Failed: ' + (err.message || 'unknown error') + ' — check server logs for details.')}`);
+      const isMissingSyncKey = /appStateKey.*not present/i.test(err.message || '');
+      const message = isMissingSyncKey
+        ? "This bot's session is missing some WhatsApp sync data needed to change the name. Re-link the bot (new QR/pairing code) to fix it — this can't be fixed by retrying."
+        : 'Failed: ' + (err.message || 'unknown error') + ' — check server logs for details.';
+      return res.redirect(`/client/dashboard?nameError=${encodeURIComponent(message)}`);
     }
     res.redirect('/client/dashboard?nameSuccess=1');
   });
