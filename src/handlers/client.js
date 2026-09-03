@@ -7,7 +7,7 @@ const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, e
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
-const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids, requestPairingCodeForBot } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids, queuePairingNumber } = require('../utils/botManager');
 const QRCode = require('qrcode');
 const { normalizePhoneNumber } = require('../utils/phoneNumber');
 const { getDb } = require('../db/mongo');
@@ -286,7 +286,7 @@ function createClientRoutes() {
     // Generated inline so people don't have to copy a link into a browser
     // tab just to scan a QR code — the whole connect flow lives right here.
     const qrDataUrl = live?.qr ? await QRCode.toDataURL(live.qr, { width: 280 }) : null;
-    const awaitingConnection = connectionStatus !== 'connected' && (qrDataUrl || live?.pairingCode);
+    const awaitingConnection = connectionStatus !== 'connected' && !!live;
     const sub = await getSubscription(botId);
     const active = await isSubscriptionActive(botId);
     const pricing = await getPricingSettings();
@@ -892,6 +892,8 @@ function createClientRoutes() {
     if (!digits) return res.redirect('/client/dashboard');
     const bot = await getBotById(botId);
     if (!bot) return res.redirect('/client/dashboard');
+    // Always start clean — a freshly created socket, not a queued call on
+    // a socket that might be mid-handshake or in a stale state.
     await deleteBotSession(botId);
     const newSlug = crypto.randomBytes(6).toString('hex');
     const db = await getDb();
@@ -899,10 +901,13 @@ function createClientRoutes() {
     await startBotSocket(botId, newSlug, require('./botStartHook').onBotReady).catch((err) =>
       logger.error({ err, botId }, 'Failed to start bot socket for inline pairing')
     );
-    // Socket entry now exists in memory, so this can find it and queue the
-    // pairing-code request — it fires once the connection reaches the
-    // point where WhatsApp would otherwise have shown a QR code instead.
-    requestPairingCodeForBot(botId, digits);
+    // Queue only — do NOT request the code instantly. This fresh socket
+    // hasn't finished its handshake yet; requesting immediately is what
+    // produced "Couldn't link device". The connection.update handler in
+    // botManager.js requests the real code the moment the socket actually
+    // reaches that point, and the dashboard's auto-refresh picks it up
+    // a few seconds later.
+    queuePairingNumber(botId, digits);
     res.redirect('/client/dashboard');
   });
 

@@ -315,6 +315,24 @@ function requestPairingCodeForBot(botId, phoneNumber) {
 }
 
 /**
+ * Sets which number wants a pairing code WITHOUT requesting it right away.
+ * Use this right after starting a brand-new socket: that socket hasn't
+ * finished its WhatsApp handshake yet, and asking for a pairing code too
+ * soon is exactly what produces "Couldn't link device" — a code gets
+ * generated, but for a connection that isn't actually ready to use it.
+ * The existing connection.update handler below already does the safe
+ * thing: it fires the real request the moment the socket reaches the
+ * point where it would otherwise show a QR code — i.e. the moment it's
+ * genuinely ready. This just tells that handler which number to use.
+ */
+function queuePairingNumber(botId, phoneNumber) {
+  const entry = activeBots.get(botId);
+  if (!entry) return false;
+  entry.pendingPairingNumber = phoneNumber;
+  return true;
+}
+
+/**
  * Loads every non-deleted bot from the database and starts a socket for each.
  * Called once on server startup. onReady is invoked per-bot once it connects.
  * Because credentials live in Postgres, already-connected clients reconnect
@@ -418,6 +436,7 @@ module.exports = {
   getBotState,
   getAllBotStates,
   requestPairingCodeForBot,
+  queuePairingNumber,
   deleteBotSession,
   closeAllBotSockets,
   enqueueConnect,
