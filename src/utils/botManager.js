@@ -67,7 +67,7 @@ async function updateBotStatusInDb(botId, status, extra = {}) {
  * connected clients stay logged in across deploys/restarts on Render's
  * free tier, which wipes the filesystem but persists database data.
  */
-async function startBotSocket(botId, slug, onReady) {
+async function startBotSocket(botId, slug, onReady, pendingPairingNumber = null) {
   const { state, saveCreds } = await useMongoAuthState(botId);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -93,7 +93,13 @@ async function startBotSocket(botId, slug, onReady) {
     status: 'connecting',
     qr: null,
     pairingCode: null,
-    pendingPairingNumber: null,
+    // Set here, synchronously, before the socket has any chance to emit a
+    // connection event — this is what actually prevents a QR from ever
+    // being generated for a pairing-code session. Doing this AFTER the
+    // socket already exists (as a separate call) is a real race: WhatsApp
+    // only respects "I want a pairing code" if that's known before the
+    // very first connection attempt, not after a QR has already appeared.
+    pendingPairingNumber,
     slug,
     reconnectAttempts: 0,
   };
