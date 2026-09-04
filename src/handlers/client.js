@@ -415,6 +415,7 @@ function createClientRoutes() {
         ` : `
           <p><small>Your bot isn't connected right now. Use the link below to scan a QR code or enter a pairing code with the same WhatsApp number you registered with.</small></p>
         `}
+        ${pricing.tutorial_url ? `<p>📺 <a href="${pricing.tutorial_url}" target="_blank" rel="noopener">Watch: How to connect your bot</a></p>` : ''}
         ${onboardingUrl ? `<code style="display:block;margin:10px 0;word-break:break-all;">${onboardingUrl}</code>` : ''}
         <form method="POST" action="/client/settings/regenerate-link">
           <button type="submit">Generate new connection link</button>

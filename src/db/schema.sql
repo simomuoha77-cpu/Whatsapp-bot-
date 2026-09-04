@@ -368,6 +368,7 @@ CREATE TABLE IF NOT EXISTS pricing_settings (
   monthly_price NUMERIC NOT NULL DEFAULT 500,
   yearly_price NUMERIC NOT NULL DEFAULT 5000,
   trial_days INTEGER NOT NULL DEFAULT 5,
+  tutorial_url TEXT, -- e.g. a YouTube link shown to clients on how to connect their bot
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 

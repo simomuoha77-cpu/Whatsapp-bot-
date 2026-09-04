@@ -3,6 +3,7 @@ const QRCode = require('qrcode');
 const { getBotBySlug } = require('../db/bots');
 const { getBotState, requestPairingCodeForBot } = require('../utils/botManager');
 const { normalizePhoneNumber } = require('../utils/phoneNumber');
+const { getPricingSettings } = require('../db/pricingSettings');
 
 function layout(title, body) {
   return `
@@ -33,6 +34,8 @@ function createOnboardingRoutes() {
 
     const state = getBotState(bot.id);
     const status = state?.status || bot.status;
+    const pricing = await getPricingSettings();
+    const tutorialUrl = pricing.tutorial_url;
 
     if (status === 'connected') {
       return res.send(layout('Connected', '<h2>✅ Already connected!</h2><p>Your bot is up and running.</p>'));
@@ -46,6 +49,7 @@ function createOnboardingRoutes() {
         <p>Settings &rarr; Linked Devices &rarr; Link a Device</p>
         <img src="${qrImage}" />
         <p><a href="/connect/${bot.slug}/pair">Only one phone? Use a pairing code instead</a></p>
+        ${tutorialUrl ? `<p style="margin-top:16px;">📺 <a href="${tutorialUrl}" target="_blank" rel="noopener">Watch the setup video</a></p>` : ''}
       `));
     }
 
@@ -54,6 +58,7 @@ function createOnboardingRoutes() {
       <p>Choose how you'd like to log in:</p>
       <p><a href="/connect/${bot.slug}/qr"><button>Scan QR Code</button></a></p>
       <p><a href="/connect/${bot.slug}/pair"><button>Use Pairing Code</button></a></p>
+      ${tutorialUrl ? `<p style="margin-top:24px;">📺 <a href="${tutorialUrl}" target="_blank" rel="noopener">Not sure how? Watch the setup video</a></p>` : ''}
     `));
   });
 

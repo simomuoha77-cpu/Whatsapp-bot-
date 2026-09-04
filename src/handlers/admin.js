@@ -34,7 +34,7 @@ const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = re
 const { getRecentCapturesForBot } = require('../db/deletedCaptures');
 const { getStatusSavesForBot } = require('../db/statusSaves');
 const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownStatusPosts');
-const { getPricingSettings, updatePricingSettings } = require('../db/pricingSettings');
+const { getPricingSettings, updatePricingSettings, updateTutorialUrl } = require('../db/pricingSettings');
 const { getSubscription, isSubscriptionActive, extendSubscriptionByYMD, setSubscriptionExpiry } = require('../db/subscriptions');
 const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids } = require('../utils/botManager');
@@ -214,6 +214,14 @@ function createAdminRoutes() {
         <p><small>Changes apply to new registrations and renewals going forward — doesn't retroactively change anyone's current trial/subscription end date.</small></p>
       </div>
       <div class="card">
+        <h3>Setup Tutorial Link</h3>
+        <p><small>Shown to clients on their connect page and dashboard — e.g. a YouTube video walking through how to scan the QR code / enter a pairing code.</small></p>
+        <form method="POST" action="/admin/tutorial-link">
+          <input name="tutorialUrl" placeholder="https://youtube.com/..." value="${pricing.tutorial_url || ''}" />
+          <button type="submit">Save Link</button>
+        </form>
+      </div>
+      <div class="card">
         <h3>Add a new client</h3>
         <form method="POST" action="/admin/bots">
           <input name="clientName" placeholder="Client name (e.g. Jane's Salon)" required />
@@ -231,6 +239,11 @@ function createAdminRoutes() {
       yearlyPrice: parseFloat(req.body.yearlyPrice),
       trialDays: parseInt(req.body.trialDays, 10),
     });
+    res.redirect('/admin');
+  });
+
+  router.post('/tutorial-link', async (req, res) => {
+    await updateTutorialUrl((req.body.tutorialUrl || '').trim());
     res.redirect('/admin');
   });
 
