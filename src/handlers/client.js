@@ -168,6 +168,21 @@ function layout(title, body, extraHead = '') {
           document.querySelectorAll('.tz-input').forEach((el) => {
             try { el.value = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) {}
           });
+          // Every button click that submits a form (Delete, Cancel, Save,
+          // Schedule, etc.) shows immediate loading feedback — Render's
+          // free tier can take a while to respond, especially right after
+          // being idle, so without this a click can look like it did
+          // nothing when it's actually still working.
+          document.addEventListener('submit', (e) => {
+            const form = e.target;
+            const btn = form.querySelector('button[type="submit"], button:not([type])');
+            if (btn && !btn.disabled) {
+              btn.dataset.originalText = btn.textContent;
+              btn.textContent = 'Loading...';
+              btn.disabled = true;
+              btn.style.opacity = '0.7';
+            }
+          });
         </script>
       </body>
     </html>
