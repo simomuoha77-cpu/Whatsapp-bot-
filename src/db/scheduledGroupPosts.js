@@ -66,6 +66,11 @@ async function deactivateScheduledGroupPost(id) {
   await db.collection('scheduled_group_posts').updateOne({ id: Number(id) }, { $set: { is_active: false } });
 }
 
+async function deleteScheduledGroupPost(id) {
+  const db = await getDb();
+  await db.collection('scheduled_group_posts').deleteOne({ id: Number(id) });
+}
+
 async function markScheduledGroupPostRun(id, { deactivate } = {}) {
   const db = await getDb();
   const update = { last_run_at: new Date() };
@@ -79,5 +84,6 @@ module.exports = {
   getDueOneOffGroupPosts,
   getScheduledGroupPostsForBot,
   deactivateScheduledGroupPost,
+  deleteScheduledGroupPost,
   markScheduledGroupPostRun,
 };

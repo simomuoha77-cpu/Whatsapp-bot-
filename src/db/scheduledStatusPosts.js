@@ -54,6 +54,11 @@ async function deactivateScheduledStatusPost(id) {
   await db.collection('scheduled_status_posts').updateOne({ id: Number(id) }, { $set: { is_active: false } });
 }
 
+async function deleteScheduledStatusPost(id) {
+  const db = await getDb();
+  await db.collection('scheduled_status_posts').deleteOne({ id: Number(id) });
+}
+
 async function markScheduledStatusPostRun(id, { deactivate } = {}) {
   const db = await getDb();
   const update = { last_run_at: new Date() };
@@ -67,5 +72,6 @@ module.exports = {
   getDueOneOffStatusPosts,
   getScheduledStatusPostsForBot,
   deactivateScheduledStatusPost,
+  deleteScheduledStatusPost,
   markScheduledStatusPostRun,
 };

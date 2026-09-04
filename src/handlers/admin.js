@@ -20,11 +20,12 @@ const {
 const { getContactsForBot, manuallyAddContact } = require('../db/contacts');
 const { getThreadForContact, deleteThread, getRecentChatsForBot } = require('../db/messages');
 const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
-const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
+const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost, deleteScheduledStatusPost } = require('../db/scheduledStatusPosts');
 const {
   getScheduledGroupPostsForBot,
   createScheduledGroupPost,
   deactivateScheduledGroupPost,
+  deleteScheduledGroupPost,
 } = require('../db/scheduledGroupPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
 const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
@@ -377,6 +378,7 @@ function createAdminRoutes() {
         <span class="pill ${p.is_active ? 'on' : 'off'}">${p.is_active ? 'ACTIVE' : 'OFF'}</span>
         <span>${p.cron_expression}${p.media_path ? ` ${p.media_type === 'video' ? '🎥' : '📷'}` : ''} — "${p.caption || ''}"</span>
         ${p.is_active ? `<form method="POST" action="/admin/bot/${botId}/scheduled-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
+        <form method="POST" action="/admin/bot/${botId}/scheduled-posts/${p.id}/delete" style="width:auto;"><button class="danger" style="width:auto;">Delete</button></form>
       </div>
     `).join('') || '<p>None scheduled.</p>';
 
@@ -385,6 +387,7 @@ function createAdminRoutes() {
         <span class="pill ${p.is_active ? 'on' : 'off'}">${p.is_active ? 'ACTIVE' : 'OFF'}</span>
         <span>${p.cron_expression ? 'Daily ' + p.cron_expression : new Date(p.run_at).toLocaleString()}${p.media_path ? ` ${p.media_type === 'video' ? '🎥' : '📷'}` : ''} → ${p.group_name || p.group_jid} — "${p.caption || ''}"</span>
         ${p.is_active ? `<form method="POST" action="/admin/bot/${botId}/group-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
+        <form method="POST" action="/admin/bot/${botId}/group-posts/${p.id}/delete" style="width:auto;"><button class="danger" style="width:auto;">Delete</button></form>
       </div>
     `).join('') || '<p>None scheduled.</p>';
 
@@ -1107,6 +1110,12 @@ function createAdminRoutes() {
     res.redirect(`/admin/bot/${req.params.id}`);
   });
 
+  router.post('/bot/:id/scheduled-posts/:postId/delete', async (req, res) => {
+    await deleteScheduledStatusPost(parseInt(req.params.postId, 10));
+    await refreshScheduler();
+    res.redirect(`/admin/bot/${req.params.id}`);
+  });
+
   router.post('/bot/:id/group-posts', async (req, res) => {
     const botId = parseInt(req.params.id, 10);
     try {
@@ -1161,6 +1170,12 @@ function createAdminRoutes() {
 
   router.post('/bot/:id/group-posts/:postId/cancel', async (req, res) => {
     await deactivateScheduledGroupPost(parseInt(req.params.postId, 10));
+    await refreshScheduler();
+    res.redirect(`/admin/bot/${req.params.id}`);
+  });
+
+  router.post('/bot/:id/group-posts/:postId/delete', async (req, res) => {
+    await deleteScheduledGroupPost(parseInt(req.params.postId, 10));
     await refreshScheduler();
     res.redirect(`/admin/bot/${req.params.id}`);
   });

@@ -27,11 +27,12 @@ const {
 } = require('../db/botFeatures');
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
 const { getRecentPostsWithViewers, recordOwnStatusPost } = require('../db/ownStatusPosts');
-const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost } = require('../db/scheduledStatusPosts');
+const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost, deleteScheduledStatusPost } = require('../db/scheduledStatusPosts');
 const {
   getScheduledGroupPostsForBot,
   createScheduledGroupPost,
   deactivateScheduledGroupPost,
+  deleteScheduledGroupPost,
 } = require('../db/scheduledGroupPosts');
 const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
 const { resolveSchedule } = require('../utils/scheduleTime');
@@ -623,6 +624,7 @@ function createClientRoutes() {
             <span class="pill ${p.is_active ? 'on' : 'off'}">${p.is_active ? 'ACTIVE' : 'OFF'}</span>
             <span>${p.cron_expression ? 'Daily ' + p.cron_expression : new Date(p.run_at).toLocaleString()}${p.media_path ? ` ${p.media_type === 'video' ? '🎥' : '📷'}` : ''} — "${p.caption || ''}"</span>
             ${p.is_active ? `<form method="POST" action="/client/settings/scheduled-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
+            <form method="POST" action="/client/settings/scheduled-posts/${p.id}/delete" style="width:auto;"><button class="danger" style="width:auto;">Delete</button></form>
           </div>
         `).join('') || '<p>None scheduled.</p>'}
         <form method="POST" action="/client/settings/scheduled-posts" enctype="multipart/form-data">
@@ -644,6 +646,7 @@ function createClientRoutes() {
             <span class="pill ${p.is_active ? 'on' : 'off'}">${p.is_active ? 'ACTIVE' : 'OFF'}</span>
             <span>${p.cron_expression ? 'Daily ' + p.cron_expression : new Date(p.run_at).toLocaleString()}${p.media_path ? ` ${p.media_type === 'video' ? '🎥' : '📷'}` : ''} → ${p.group_name || p.group_jid} — "${p.caption || ''}"</span>
             ${p.is_active ? `<form method="POST" action="/client/settings/group-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
+            <form method="POST" action="/client/settings/group-posts/${p.id}/delete" style="width:auto;"><button class="danger" style="width:auto;">Delete</button></form>
           </div>
         `).join('') || '<p>None scheduled.</p>'}
         ${botGroups.length > 0 ? `
@@ -784,6 +787,12 @@ function createClientRoutes() {
     res.redirect('/client/dashboard');
   });
 
+  router.post('/settings/scheduled-posts/:postId/delete', async (req, res) => {
+    await deleteScheduledStatusPost(parseInt(req.params.postId, 10));
+    await refreshScheduler();
+    res.redirect('/client/dashboard');
+  });
+
   router.post('/settings/group-posts', async (req, res) => {
     const botId = req.session.clientBotId;
     try {
@@ -836,6 +845,12 @@ function createClientRoutes() {
 
   router.post('/settings/group-posts/:postId/cancel', async (req, res) => {
     await deactivateScheduledGroupPost(parseInt(req.params.postId, 10));
+    await refreshScheduler();
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/group-posts/:postId/delete', async (req, res) => {
+    await deleteScheduledGroupPost(parseInt(req.params.postId, 10));
     await refreshScheduler();
     res.redirect('/client/dashboard');
   });
