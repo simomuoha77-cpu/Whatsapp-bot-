@@ -67,7 +67,7 @@ async function updateBotStatusInDb(botId, status, extra = {}) {
  * connected clients stay logged in across deploys/restarts on Render's
  * free tier, which wipes the filesystem but persists database data.
  */
-async function startBotSocket(botId, slug, onReady, pendingPairingNumber = null) {
+async function startBotSocket(botId, slug, onReady) {
   const { state, saveCreds } = await useMongoAuthState(botId);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -93,13 +93,7 @@ async function startBotSocket(botId, slug, onReady, pendingPairingNumber = null)
     status: 'connecting',
     qr: null,
     pairingCode: null,
-    // Set here, synchronously, before the socket has any chance to emit a
-    // connection event — this is what actually prevents a QR from ever
-    // being generated for a pairing-code session. Doing this AFTER the
-    // socket already exists (as a separate call) is a real race: WhatsApp
-    // only respects "I want a pairing code" if that's known before the
-    // very first connection attempt, not after a QR has already appeared.
-    pendingPairingNumber,
+    pendingPairingNumber: null,
     slug,
     reconnectAttempts: 0,
   };
@@ -321,24 +315,6 @@ function requestPairingCodeForBot(botId, phoneNumber) {
 }
 
 /**
- * Sets which number wants a pairing code WITHOUT requesting it right away.
- * Use this right after starting a brand-new socket: that socket hasn't
- * finished its WhatsApp handshake yet, and asking for a pairing code too
- * soon is exactly what produces "Couldn't link device" — a code gets
- * generated, but for a connection that isn't actually ready to use it.
- * The existing connection.update handler below already does the safe
- * thing: it fires the real request the moment the socket reaches the
- * point where it would otherwise show a QR code — i.e. the moment it's
- * genuinely ready. This just tells that handler which number to use.
- */
-function queuePairingNumber(botId, phoneNumber) {
-  const entry = activeBots.get(botId);
-  if (!entry) return false;
-  entry.pendingPairingNumber = phoneNumber;
-  return true;
-}
-
-/**
  * Loads every non-deleted bot from the database and starts a socket for each.
  * Called once on server startup. onReady is invoked per-bot once it connects.
  * Because credentials live in Postgres, already-connected clients reconnect
@@ -442,7 +418,6 @@ module.exports = {
   getBotState,
   getAllBotStates,
   requestPairingCodeForBot,
-  queuePairingNumber,
   deleteBotSession,
   closeAllBotSockets,
   enqueueConnect,
