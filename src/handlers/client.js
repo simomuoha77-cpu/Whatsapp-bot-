@@ -27,12 +27,13 @@ const {
 } = require('../db/botFeatures');
 const { getAllKeywordResponses, addKeywordResponse, deleteKeywordResponse } = require('../db/keywordResponses');
 const { getRecentPostsWithViewers, recordOwnStatusPost } = require('../db/ownStatusPosts');
-const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost, deleteScheduledStatusPost } = require('../db/scheduledStatusPosts');
+const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost, deleteScheduledStatusPost, updateScheduledStatusPostCaption } = require('../db/scheduledStatusPosts');
 const {
   getScheduledGroupPostsForBot,
   createScheduledGroupPost,
   deactivateScheduledGroupPost,
   deleteScheduledGroupPost,
+  updateScheduledGroupPostCaption,
 } = require('../db/scheduledGroupPosts');
 const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
 const { resolveSchedule } = require('../utils/scheduleTime');
@@ -642,6 +643,13 @@ function createClientRoutes() {
             ${p.is_active ? `<form method="POST" action="/client/settings/scheduled-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
             <form method="POST" action="/client/settings/scheduled-posts/${p.id}/delete" style="width:auto;"><button class="danger" style="width:auto;">Delete</button></form>
           </div>
+          <details style="margin-bottom:10px;">
+            <summary style="cursor:pointer;"><small>Edit caption</small></summary>
+            <form method="POST" action="/client/settings/scheduled-posts/${p.id}/edit-caption" style="margin-top:8px;">
+              <input name="caption" placeholder="New caption" value="${(p.caption || '').replace(/"/g, '&quot;')}" />
+              <button type="submit" style="width:auto;">Save Caption</button>
+            </form>
+          </details>
         `).join('') || '<p>None scheduled.</p>'}
         <form method="POST" action="/client/settings/scheduled-posts" enctype="multipart/form-data">
           <label><small>Time</small><input type="time" name="time" required /></label>
@@ -664,6 +672,13 @@ function createClientRoutes() {
             ${p.is_active ? `<form method="POST" action="/client/settings/group-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
             <form method="POST" action="/client/settings/group-posts/${p.id}/delete" style="width:auto;"><button class="danger" style="width:auto;">Delete</button></form>
           </div>
+          <details style="margin-bottom:10px;">
+            <summary style="cursor:pointer;"><small>Edit caption</small></summary>
+            <form method="POST" action="/client/settings/group-posts/${p.id}/edit-caption" style="margin-top:8px;">
+              <input name="caption" placeholder="New caption" value="${(p.caption || '').replace(/"/g, '&quot;')}" />
+              <button type="submit" style="width:auto;">Save Caption</button>
+            </form>
+          </details>
         `).join('') || '<p>None scheduled.</p>'}
         ${botGroups.length > 0 ? `
           <form method="POST" action="/client/settings/group-posts" enctype="multipart/form-data">
@@ -809,6 +824,12 @@ function createClientRoutes() {
     res.redirect('/client/dashboard');
   });
 
+  router.post('/settings/scheduled-posts/:postId/edit-caption', async (req, res) => {
+    await updateScheduledStatusPostCaption(parseInt(req.params.postId, 10), (req.body.caption || '').trim());
+    await refreshScheduler();
+    res.redirect('/client/dashboard');
+  });
+
   router.post('/settings/group-posts', async (req, res) => {
     const botId = req.session.clientBotId;
     try {
@@ -867,6 +888,12 @@ function createClientRoutes() {
 
   router.post('/settings/group-posts/:postId/delete', async (req, res) => {
     await deleteScheduledGroupPost(parseInt(req.params.postId, 10));
+    await refreshScheduler();
+    res.redirect('/client/dashboard');
+  });
+
+  router.post('/settings/group-posts/:postId/edit-caption', async (req, res) => {
+    await updateScheduledGroupPostCaption(parseInt(req.params.postId, 10), (req.body.caption || '').trim());
     await refreshScheduler();
     res.redirect('/client/dashboard');
   });

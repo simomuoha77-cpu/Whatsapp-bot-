@@ -20,12 +20,13 @@ const {
 const { getContactsForBot, manuallyAddContact } = require('../db/contacts');
 const { getThreadForContact, deleteThread, getRecentChatsForBot } = require('../db/messages');
 const { getViewOnceCapturesForBot } = require('../db/viewOnceCaptures');
-const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost, deleteScheduledStatusPost } = require('../db/scheduledStatusPosts');
+const { getScheduledStatusPostsForBot, createScheduledStatusPost, deactivateScheduledStatusPost, deleteScheduledStatusPost, updateScheduledStatusPostCaption } = require('../db/scheduledStatusPosts');
 const {
   getScheduledGroupPostsForBot,
   createScheduledGroupPost,
   deactivateScheduledGroupPost,
   deleteScheduledGroupPost,
+  updateScheduledGroupPostCaption,
 } = require('../db/scheduledGroupPosts');
 const { getRemindersForBot, createReminder, deactivateReminder } = require('../db/reminders');
 const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
@@ -408,6 +409,13 @@ function createAdminRoutes() {
         ${p.is_active ? `<form method="POST" action="/admin/bot/${botId}/scheduled-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
         <form method="POST" action="/admin/bot/${botId}/scheduled-posts/${p.id}/delete" style="width:auto;"><button class="danger" style="width:auto;">Delete</button></form>
       </div>
+      <details style="margin-bottom:10px;">
+        <summary style="cursor:pointer;"><small>Edit caption</small></summary>
+        <form method="POST" action="/admin/bot/${botId}/scheduled-posts/${p.id}/edit-caption" style="margin-top:8px;">
+          <input name="caption" placeholder="New caption" value="${(p.caption || '').replace(/"/g, '&quot;')}" />
+          <button type="submit" style="width:auto;">Save Caption</button>
+        </form>
+      </details>
     `).join('') || '<p>None scheduled.</p>';
 
     const groupPostRows = groupPosts.map((p) => `
@@ -417,6 +425,13 @@ function createAdminRoutes() {
         ${p.is_active ? `<form method="POST" action="/admin/bot/${botId}/group-posts/${p.id}/cancel" style="width:auto;"><button class="danger" style="width:auto;">Cancel</button></form>` : ''}
         <form method="POST" action="/admin/bot/${botId}/group-posts/${p.id}/delete" style="width:auto;"><button class="danger" style="width:auto;">Delete</button></form>
       </div>
+      <details style="margin-bottom:10px;">
+        <summary style="cursor:pointer;"><small>Edit caption</small></summary>
+        <form method="POST" action="/admin/bot/${botId}/group-posts/${p.id}/edit-caption" style="margin-top:8px;">
+          <input name="caption" placeholder="New caption" value="${(p.caption || '').replace(/"/g, '&quot;')}" />
+          <button type="submit" style="width:auto;">Save Caption</button>
+        </form>
+      </details>
     `).join('') || '<p>None scheduled.</p>';
 
     const reminderRows = reminders.map((r) => `
@@ -1144,6 +1159,12 @@ function createAdminRoutes() {
     res.redirect(`/admin/bot/${req.params.id}`);
   });
 
+  router.post('/bot/:id/scheduled-posts/:postId/edit-caption', async (req, res) => {
+    await updateScheduledStatusPostCaption(parseInt(req.params.postId, 10), (req.body.caption || '').trim());
+    await refreshScheduler();
+    res.redirect(`/admin/bot/${req.params.id}`);
+  });
+
   router.post('/bot/:id/group-posts', async (req, res) => {
     const botId = parseInt(req.params.id, 10);
     try {
@@ -1204,6 +1225,12 @@ function createAdminRoutes() {
 
   router.post('/bot/:id/group-posts/:postId/delete', async (req, res) => {
     await deleteScheduledGroupPost(parseInt(req.params.postId, 10));
+    await refreshScheduler();
+    res.redirect(`/admin/bot/${req.params.id}`);
+  });
+
+  router.post('/bot/:id/group-posts/:postId/edit-caption', async (req, res) => {
+    await updateScheduledGroupPostCaption(parseInt(req.params.postId, 10), (req.body.caption || '').trim());
     await refreshScheduler();
     res.redirect(`/admin/bot/${req.params.id}`);
   });
