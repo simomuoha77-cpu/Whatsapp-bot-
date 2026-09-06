@@ -380,7 +380,16 @@ async function reactToStatus(sock, msg, stealthMode) {
       [preferredParticipant, participantAlt, resolvedParticipant, participant, selfJid].filter(Boolean)
     ),
   ];
-  const opts = statusJidList.length > 0 ? { statusJidList } : undefined;
+  // Every other status@broadcast send in this codebase (scheduler.js,
+  // client.js, admin.js — all posting your OWN status) includes
+  // `broadcast: true` alongside statusJidList. This reaction send was the
+  // only one missing it. Without it, Baileys has no signal that this
+  // send should be treated as status-type traffic rather than an
+  // ordinary chat message addressed to the unusual 'status@broadcast'
+  // JID — which is consistent with everything we've seen: it reports
+  // success, but never renders as an actual status reaction on the
+  // recipient's side.
+  const opts = statusJidList.length > 0 ? { statusJidList, broadcast: true } : { broadcast: true };
 
   try {
     if (needsToggle) await sock.updateReadReceiptsPrivacy('all');
