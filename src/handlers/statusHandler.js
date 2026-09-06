@@ -168,6 +168,19 @@ async function resolveToPhoneJid(sock, jid) {
   }
 }
 
+/**
+ * The socket's own JID comes back as "<number>:<device>@s.whatsapp.net".
+ * Every other place in this codebase (antiViewOnce.js, messageHandler.js,
+ * order.js) strips the ":<device>" part before treating it as a JID for
+ * session/addressing purposes — do the same here instead of pushing the
+ * raw device-suffixed form into statusJidList.
+ */
+function normalizeSelfJid(rawId) {
+  if (!rawId) return null;
+  const [user] = rawId.split(':');
+  return user ? `${user}@s.whatsapp.net` : null;
+}
+
 async function reactToStatus(sock, msg, stealthMode) {
   // WhatsApp's status viewer sheet only ever renders the native heart badge
   // for a status reaction, no matter what emoji is actually sent underneath.
@@ -197,16 +210,36 @@ async function reactToStatus(sock, msg, stealthMode) {
   const needsToggle = (stealthMode || 'normal') !== 'normal';
 
   const participant = msg.key.participant;
+  // participantAlt/participantPn is the phone-number counterpart WhatsApp's
+  // own server attaches directly to this message when participant is a
+  // @lid — trust that over a locally-derived lookup when it's present.
   const participantAlt = msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid;
   const resolvedParticipant = await resolveToPhoneJid(sock, participant);
+  const selfJid = normalizeSelfJid(sock.user?.id);
+
+  // THE ACTUAL BUG: this used to compute resolvedParticipant above and then
+  // throw it away, sending the reaction with the *original* msg.key — so if
+  // participant only ever arrived as an unmapped @lid, the reaction was
+  // encrypted and "sent successfully" but keyed to an identity the owner's
+  // device can't attach to anything, and it never rendered on their side.
+  // The reaction's key has to carry the same resolved/addressable identity
+  // that we're actually building sessions for below.
+  const preferredParticipant = participantAlt || resolvedParticipant || participant;
+  const reactionKey = { ...msg.key, participant: preferredParticipant };
+
+  // Resolved/preferred form first — some contacts only resolve after this
+  // point (e.g. session established moments ago), so keep every candidate
+  // form in the list, but the one we're actually addressing goes first.
   const statusJidList = [
-    ...new Set([participant, participantAlt, resolvedParticipant, sock.user?.id].filter(Boolean)),
+    ...new Set(
+      [preferredParticipant, participantAlt, resolvedParticipant, participant, selfJid].filter(Boolean)
+    ),
   ];
   const opts = statusJidList.length > 0 ? { statusJidList } : undefined;
 
   try {
     if (needsToggle) await sock.updateReadReceiptsPrivacy('all');
-    await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } }, opts);
+    await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
   } finally {
     if (needsToggle) {
       try {
@@ -216,7 +249,7 @@ async function reactToStatus(sock, msg, stealthMode) {
       }
     }
   }
-  return { emoji, participant, resolvedParticipant, statusJidList };
+  return { emoji, participant, participantAlt, resolvedParticipant, preferredParticipant, statusJidList, reactionKey };
 }
 
 async function saveStatusIfMedia(botId, msg, messageType, caption, contactJid) {
@@ -334,7 +367,7 @@ function registerStatusHandler(sock, botId) {
             // itself no longer waits before sending.
             enqueueReaction(botId, async () => {
               const result = await reactToStatus(sock, msg, features.stealth_read_mode);
-              logger.info({ botId, contactJid, statusId: msg.key.id, ...result, key: msg.key }, 'Reacted to status');
+              logger.info({ botId, contactJid, statusId: msg.key.id, originalKey: msg.key, ...result }, 'Reacted to status');
             });
           }
         });
@@ -342,7 +375,7 @@ function registerStatusHandler(sock, botId) {
         // Viewing is off but reacting is on — still react on its own, every time.
         enqueueReaction(botId, async () => {
           const result = await reactToStatus(sock, msg, features.stealth_read_mode);
-          logger.info({ botId, contactJid, statusId: msg.key.id, ...result, key: msg.key }, 'Reacted to status');
+          logger.info({ botId, contactJid, statusId: msg.key.id, originalKey: msg.key, ...result }, 'Reacted to status');
         });
       }
 
