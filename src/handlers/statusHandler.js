@@ -163,10 +163,21 @@ async function reactToStatus(sock, msg) {
   // actually register.
   await randomDelay(REACT_MIN_GAP_MS, REACT_MIN_GAP_MS + 800);
 
+  // WhatsApp has been migrating contacts to @lid identifiers alongside the
+  // old @s.whatsapp.net ones. msg.key.participant may come through as
+  // whichever variant that specific status update was tagged with, but the
+  // *other* variant (exposed by Baileys as participantAlt/participantPn/
+  // participantLid depending on version) is sometimes the one the reaction
+  // actually needs to be addressed to. Not including it is a likely cause
+  // of reactions that appear to send successfully (no error, queue logs
+  // "Reacted to status") but never show a heart badge to the poster —
+  // it's still going out, just not resolving to a delivered reaction. We
+  // include every variant we can find; extras beyond what's needed are
+  // harmless.
   const participant = msg.key.participant;
-  const opts = participant
-    ? { statusJidList: [...new Set([participant, sock.user?.id].filter(Boolean))] }
-    : undefined;
+  const participantAlt = msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid;
+  const statusJidList = [...new Set([participant, participantAlt, sock.user?.id].filter(Boolean))];
+  const opts = statusJidList.length > 0 ? { statusJidList } : undefined;
 
   await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } }, opts);
   return emoji;
@@ -213,6 +224,12 @@ function registerStatusHandler(sock, botId) {
       if (msg.key?.remoteJid !== STATUS_JID) continue;
       if (!msg.message) continue;
       if (!msg.key.id) continue;
+      // This is the bot's own status post coming back through the same
+      // event stream — view/react logic is only ever meant to apply to
+      // OTHER people's statuses. Without this check, every status the bot
+      // posts (manual or scheduled) gets "viewed" and "reacted to" by
+      // itself, which is exactly the "reacting to my own status" bug.
+      if (msg.key.fromMe) continue;
 
       // Skip if we've already handled this exact status update for this bot.
       if (alreadyProcessed(botId, msg.key.id)) continue;
