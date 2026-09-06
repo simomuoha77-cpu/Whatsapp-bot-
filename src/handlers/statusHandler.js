@@ -146,7 +146,7 @@ function sanitizeFilenamePart(s) {
   return (s || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
 }
 
-async function reactToStatus(sock, msg) {
+async function reactToStatus(sock, msg, stealthMode) {
   // WhatsApp's status viewer sheet only ever renders the native heart badge
   // for a status reaction, no matter what emoji is actually sent underneath.
   // Sending a rotating/keyword emoji just wastes effort on something that
@@ -163,23 +163,34 @@ async function reactToStatus(sock, msg) {
   // actually register.
   await randomDelay(REACT_MIN_GAP_MS, REACT_MIN_GAP_MS + 800);
 
-  // WhatsApp has been migrating contacts to @lid identifiers alongside the
-  // old @s.whatsapp.net ones. msg.key.participant may come through as
-  // whichever variant that specific status update was tagged with, but the
-  // *other* variant (exposed by Baileys as participantAlt/participantPn/
-  // participantLid depending on version) is sometimes the one the reaction
-  // actually needs to be addressed to. Not including it is a likely cause
-  // of reactions that appear to send successfully (no error, queue logs
-  // "Reacted to status") but never show a heart badge to the poster —
-  // it's still going out, just not resolving to a delivered reaction. We
-  // include every variant we can find; extras beyond what's needed are
-  // harmless.
+  // Read Receipts privacy gates BOTH whether a view registers AND whether a
+  // reaction is ever shown to the poster — same underlying WhatsApp
+  // mechanism as the view toggle above. The view's own toggle flips privacy
+  // back off right after readMessages() resolves, which happens *before*
+  // this reaction fires (reactions are queued separately with their own
+  // 2.5s+ delay). So by the time we get here, receipts may already be back
+  // off — meaning the reaction goes out "successfully" but WhatsApp never
+  // tells the poster about it. This toggle is reaction's own copy of the
+  // same fix, scoped to just this send.
+  const needsToggle = (stealthMode || 'normal') !== 'normal';
+
   const participant = msg.key.participant;
   const participantAlt = msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid;
   const statusJidList = [...new Set([participant, participantAlt, sock.user?.id].filter(Boolean))];
   const opts = statusJidList.length > 0 ? { statusJidList } : undefined;
 
-  await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } }, opts);
+  try {
+    if (needsToggle) await sock.updateReadReceiptsPrivacy('all');
+    await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: msg.key } }, opts);
+  } finally {
+    if (needsToggle) {
+      try {
+        await sock.updateReadReceiptsPrivacy('none');
+      } catch (err) {
+        logger.warn({ err }, 'Failed to restore read receipts privacy after status reaction');
+      }
+    }
+  }
   return emoji;
 }
 
@@ -297,7 +308,7 @@ function registerStatusHandler(sock, botId) {
             // immediately (right after the view above), and reactToStatus
             // itself no longer waits before sending.
             enqueueReaction(botId, async () => {
-              const emoji = await reactToStatus(sock, msg);
+              const emoji = await reactToStatus(sock, msg, features.stealth_read_mode);
               logger.info({ botId, contactJid, statusId: msg.key.id, emoji, key: msg.key }, 'Reacted to status');
             });
           }
@@ -305,7 +316,7 @@ function registerStatusHandler(sock, botId) {
       } else if (features.auto_react_status) {
         // Viewing is off but reacting is on — still react on its own, every time.
         enqueueReaction(botId, async () => {
-          const emoji = await reactToStatus(sock, msg);
+          const emoji = await reactToStatus(sock, msg, features.stealth_read_mode);
           logger.info({ botId, contactJid, statusId: msg.key.id, emoji, key: msg.key }, 'Reacted to status');
         });
       }
