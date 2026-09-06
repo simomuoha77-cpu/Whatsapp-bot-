@@ -163,6 +163,13 @@ async function startBotSocket(botId, slug, onReady) {
       entry.pairingCode = null;
       entry.reconnectAttempts = 0;
       const ownNumber = sock.user?.id?.split(':')[0]?.split('@')[0] || null;
+      // Diagnostic requested explicitly: confirm the ACTUAL authenticated
+      // identity of this socket, not just the configured bot name/label in
+      // the dashboard. A bot's display name is cosmetic and set by the
+      // client — it says nothing about which WhatsApp number the session
+      // is really logged into. This is the ground truth.
+      console.log(`[botId ${botId}] AUTHENTICATED AS:`, sock.user);
+      console.log(`[botId ${botId}] JID:`, sock.user?.id);
       await updateBotStatusInDb(botId, 'connected', {
         phone_number: ownNumber,
         connected_at: new Date().toISOString(),
