@@ -181,6 +181,47 @@ function normalizeSelfJid(rawId) {
   return user ? `${user}@s.whatsapp.net` : null;
 }
 
+/**
+ * Every identifier Baileys might use to refer to THIS bot's own account —
+ * phone-number JID, its own @lid, and the device-suffixed raw form — so a
+ * status can be matched against "is this actually us" regardless of which
+ * form the participant field happens to arrive in for a given event.
+ *
+ * fromMe is supposed to be the authoritative signal for "this is our own
+ * status" (see the check right after this in registerStatusHandler), but
+ * it's a flag Baileys derives from the raw stanza's `from`/`participant`
+ * attrs — if a status ever gets redelivered through a path where that
+ * derivation is wrong (multi-device history sync, a stanza addressed via
+ * @lid before the LID<->PN mapping existed, etc.), fromMe can end up false
+ * for a status that is, in fact, ours. This is the second, JID-based line
+ * of defense: even if fromMe misses it, comparing the status owner's JID
+ * (in every form we know how to compute) against every form of our own
+ * identity catches it here instead.
+ */
+function getOwnJidCandidates(sock) {
+  const candidates = new Set();
+  const rawSelf = sock.user?.id;
+  if (rawSelf) {
+    candidates.add(rawSelf);
+    const normalized = normalizeSelfJid(rawSelf);
+    if (normalized) candidates.add(normalized);
+  }
+  if (sock.user?.lid) candidates.add(sock.user.lid);
+  const creds = sock.authState?.creds;
+  if (creds?.me?.id) {
+    candidates.add(creds.me.id);
+    const normalized = normalizeSelfJid(creds.me.id);
+    if (normalized) candidates.add(normalized);
+  }
+  if (creds?.me?.lid) candidates.add(creds.me.lid);
+  return candidates;
+}
+
+function isOwnJid(sock, jid) {
+  if (!jid) return false;
+  return getOwnJidCandidates(sock).has(jid);
+}
+
 async function reactToStatus(sock, msg, stealthMode) {
   // WhatsApp's status viewer sheet only ever renders the native heart badge
   // for a status reaction, no matter what emoji is actually sent underneath.
@@ -225,6 +266,21 @@ async function reactToStatus(sock, msg, stealthMode) {
   // The reaction's key has to carry the same resolved/addressable identity
   // that we're actually building sessions for below.
   const preferredParticipant = participantAlt || resolvedParticipant || participant;
+
+  // Last-resort guard, at the point of actually sending: if resolving the
+  // @lid landed us on one of our OWN identities (e.g. a stale/incorrect
+  // signalRepository mapping), refuse to send rather than firing a
+  // self-reaction. registerStatusHandler already checks this on the raw
+  // participant before we ever get here, but resolvedParticipant is
+  // computed fresh in this function, so it gets its own check too.
+  if (isOwnJid(sock, preferredParticipant)) {
+    logger.warn(
+      { participant, participantAlt, resolvedParticipant, preferredParticipant },
+      'Resolved status-reaction target is our own account — refusing to send self-reaction'
+    );
+    return { emoji, skipped: true, reason: 'resolved_to_own_jid', participant, participantAlt, resolvedParticipant, preferredParticipant };
+  }
+
   const reactionKey = { ...msg.key, participant: preferredParticipant };
 
   // Resolved/preferred form first — some contacts only resolve after this
@@ -293,12 +349,53 @@ function registerStatusHandler(sock, botId) {
       if (msg.key?.remoteJid !== STATUS_JID) continue;
       if (!msg.message) continue;
       if (!msg.key.id) continue;
+
+      // Diagnostic snapshot of every status event this bot sees, taken
+      // BEFORE any filtering below. If a self-status ever slips through
+      // both guards that follow, this line is what tells us why (e.g.
+      // fromMe:false and participant already equal to one of ourJids, or
+      // participant in a JID form ourJids doesn't recognize yet).
+      const ourJids = getOwnJidCandidates(sock);
+      // Logged at info level (not debug) deliberately: this is the exact
+      // line needed to diagnose a self-reaction bug, and this project's
+      // logger defaults to 'info' — at 'debug' it would go unseen in a
+      // normal run and the next report would have no evidence in it again.
+      logger.info(
+        {
+          botId,
+          fromMe: msg.key.fromMe,
+          participant: msg.key.participant,
+          participantAlt: msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid,
+          remoteJid: msg.key.remoteJid,
+          statusId: msg.key.id,
+          ourJids: [...ourJids],
+        },
+        'Status event received'
+      );
+
       // This is the bot's own status post coming back through the same
       // event stream — view/react logic is only ever meant to apply to
       // OTHER people's statuses. Without this check, every status the bot
       // posts (manual or scheduled) gets "viewed" and "reacted to" by
       // itself, which is exactly the "reacting to my own status" bug.
       if (msg.key.fromMe) continue;
+
+      // Second, independent guard: compare the status owner's JID (in
+      // every form we have — raw participant, server-supplied alt, and
+      // our own identity in every form) directly, instead of relying only
+      // on fromMe. This is a belt-and-suspenders check for exactly the
+      // failure mode above — it must never be reached for a genuine own
+      // status, but if fromMe is ever wrong, this is what actually stops
+      // the bot from reacting to itself.
+      const ownerJid = msg.key.participant || msg.key.remoteJid;
+      const ownerAlt = msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid;
+      if (isOwnJid(sock, ownerJid) || isOwnJid(sock, ownerAlt)) {
+        logger.warn(
+          { botId, ownerJid, ownerAlt, fromMe: msg.key.fromMe, statusId: msg.key.id },
+          'Status owner resolved to the bot\'s own account even though fromMe was false — skipping (fromMe appears unreliable for this event)'
+        );
+        continue;
+      }
 
       // Skip if we've already handled this exact status update for this bot.
       if (alreadyProcessed(botId, msg.key.id)) continue;
