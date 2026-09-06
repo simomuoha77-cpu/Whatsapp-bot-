@@ -146,6 +146,28 @@ function sanitizeFilenamePart(s) {
   return (s || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
 }
 
+/**
+ * WhatsApp is migrating contacts to opaque @lid identifiers. When a status
+ * update's participant only comes through as @lid (confirmed via server
+ * logs — no participantAlt/participantPn/participantLid present at all in
+ * this environment), reactions addressed purely to that @lid frequently
+ * don't resolve into anything the poster's device displays, even though
+ * the send itself reports success. Baileys keeps its own PN<->LID mapping
+ * in the signal repository (built up as it interacts with each contact) —
+ * this looks it up and returns the phone-number JID when available,
+ * falling back to the original @lid if there's no mapping yet.
+ */
+async function resolveToPhoneJid(sock, jid) {
+  if (!jid || !jid.endsWith('@lid')) return jid;
+  try {
+    const pn = await sock.signalRepository?.lidMapping?.getPNForLID(jid);
+    return pn || jid;
+  } catch (err) {
+    logger.warn({ err, jid }, 'Failed to resolve @lid to phone JID');
+    return jid;
+  }
+}
+
 async function reactToStatus(sock, msg, stealthMode) {
   // WhatsApp's status viewer sheet only ever renders the native heart badge
   // for a status reaction, no matter what emoji is actually sent underneath.
@@ -176,7 +198,10 @@ async function reactToStatus(sock, msg, stealthMode) {
 
   const participant = msg.key.participant;
   const participantAlt = msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid;
-  const statusJidList = [...new Set([participant, participantAlt, sock.user?.id].filter(Boolean))];
+  const resolvedParticipant = await resolveToPhoneJid(sock, participant);
+  const statusJidList = [
+    ...new Set([participant, participantAlt, resolvedParticipant, sock.user?.id].filter(Boolean)),
+  ];
   const opts = statusJidList.length > 0 ? { statusJidList } : undefined;
 
   try {
@@ -191,7 +216,7 @@ async function reactToStatus(sock, msg, stealthMode) {
       }
     }
   }
-  return emoji;
+  return { emoji, participant, resolvedParticipant, statusJidList };
 }
 
 async function saveStatusIfMedia(botId, msg, messageType, caption, contactJid) {
@@ -308,16 +333,16 @@ function registerStatusHandler(sock, botId) {
             // immediately (right after the view above), and reactToStatus
             // itself no longer waits before sending.
             enqueueReaction(botId, async () => {
-              const emoji = await reactToStatus(sock, msg, features.stealth_read_mode);
-              logger.info({ botId, contactJid, statusId: msg.key.id, emoji, key: msg.key }, 'Reacted to status');
+              const result = await reactToStatus(sock, msg, features.stealth_read_mode);
+              logger.info({ botId, contactJid, statusId: msg.key.id, ...result, key: msg.key }, 'Reacted to status');
             });
           }
         });
       } else if (features.auto_react_status) {
         // Viewing is off but reacting is on — still react on its own, every time.
         enqueueReaction(botId, async () => {
-          const emoji = await reactToStatus(sock, msg, features.stealth_read_mode);
-          logger.info({ botId, contactJid, statusId: msg.key.id, emoji, key: msg.key }, 'Reacted to status');
+          const result = await reactToStatus(sock, msg, features.stealth_read_mode);
+          logger.info({ botId, contactJid, statusId: msg.key.id, ...result, key: msg.key }, 'Reacted to status');
         });
       }
 
