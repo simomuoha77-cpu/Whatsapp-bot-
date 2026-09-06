@@ -222,6 +222,41 @@ function isOwnJid(sock, jid) {
   return getOwnJidCandidates(sock).has(jid);
 }
 
+const REACTION_ACK_LABELS = { 0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK', 3: 'DELIVERY_ACK', 4: 'READ', 5: 'PLAYED' };
+
+/**
+ * sock.sendMessage() resolving does NOT mean the reaction reached the
+ * recipient's device — it only means WhatsApp's server accepted the
+ * stanza. A reaction is real encrypted message content (unlike a status
+ * *view*, which is just an unencrypted receipt), so it can silently fail
+ * at the encryption/session layer between these two specific accounts
+ * even though the send call itself reports success.
+ *
+ * This watches messages.update for the reaction's own message id and logs
+ * every ack level WhatsApp reports for it (SERVER_ACK vs DELIVERY_ACK vs
+ * READ). If it only ever reaches SERVER_ACK and never DELIVERY_ACK, that's
+ * concrete proof of a session/delivery problem between this bot and this
+ * specific contact — not a targeting/key bug — and the fix is re-syncing
+ * or re-establishing the session with them, not further changes here.
+ */
+function trackReactionAck(sock, reactionMsgId, context) {
+  if (!reactionMsgId) return;
+  const handler = (updates) => {
+    for (const u of updates) {
+      if (u.key?.id !== reactionMsgId) continue;
+      const statusCode = u.update?.status;
+      logger.info(
+        { ...context, reactionMsgId, ackStatus: statusCode, ackLabel: REACTION_ACK_LABELS[statusCode] || statusCode },
+        'Status reaction message ack update'
+      );
+    }
+  };
+  sock.ev.on('messages.update', handler);
+  setTimeout(() => {
+    sock.ev.off('messages.update', handler);
+  }, 20000);
+}
+
 async function reactToStatus(sock, msg, stealthMode) {
   // WhatsApp's status viewer sheet only ever renders the native heart badge
   // for a status reaction, no matter what emoji is actually sent underneath.
@@ -295,7 +330,21 @@ async function reactToStatus(sock, msg, stealthMode) {
 
   try {
     if (needsToggle) await sock.updateReadReceiptsPrivacy('all');
-    await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
+    const sent = await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
+    trackReactionAck(sock, sent?.key?.id, {
+      statusId: msg.key.id,
+      preferredParticipant,
+    });
+    return {
+      emoji,
+      participant,
+      participantAlt,
+      resolvedParticipant,
+      preferredParticipant,
+      statusJidList,
+      reactionKey,
+      reactionMsgId: sent?.key?.id,
+    };
   } finally {
     if (needsToggle) {
       try {
@@ -305,7 +354,6 @@ async function reactToStatus(sock, msg, stealthMode) {
       }
     }
   }
-  return { emoji, participant, participantAlt, resolvedParticipant, preferredParticipant, statusJidList, reactionKey };
 }
 
 async function saveStatusIfMedia(botId, msg, messageType, caption, contactJid) {
