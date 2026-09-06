@@ -181,136 +181,6 @@ function normalizeSelfJid(rawId) {
   return user ? `${user}@s.whatsapp.net` : null;
 }
 
-/**
- * Every identifier Baileys might use to refer to THIS bot's own account —
- * phone-number JID, its own @lid, and the device-suffixed raw form — so a
- * status can be matched against "is this actually us" regardless of which
- * form the participant field happens to arrive in for a given event.
- *
- * fromMe is supposed to be the authoritative signal for "this is our own
- * status" (see the check right after this in registerStatusHandler), but
- * it's a flag Baileys derives from the raw stanza's `from`/`participant`
- * attrs — if a status ever gets redelivered through a path where that
- * derivation is wrong (multi-device history sync, a stanza addressed via
- * @lid before the LID<->PN mapping existed, etc.), fromMe can end up false
- * for a status that is, in fact, ours. This is the second, JID-based line
- * of defense: even if fromMe misses it, comparing the status owner's JID
- * (in every form we know how to compute) against every form of our own
- * identity catches it here instead.
- */
-function getOwnJidCandidates(sock) {
-  const candidates = new Set();
-  const rawSelf = sock.user?.id;
-  if (rawSelf) {
-    candidates.add(rawSelf);
-    const normalized = normalizeSelfJid(rawSelf);
-    if (normalized) candidates.add(normalized);
-  }
-  if (sock.user?.lid) candidates.add(sock.user.lid);
-  const creds = sock.authState?.creds;
-  if (creds?.me?.id) {
-    candidates.add(creds.me.id);
-    const normalized = normalizeSelfJid(creds.me.id);
-    if (normalized) candidates.add(normalized);
-  }
-  if (creds?.me?.lid) candidates.add(creds.me.lid);
-  return candidates;
-}
-
-function isOwnJid(sock, jid) {
-  if (!jid) return false;
-  return getOwnJidCandidates(sock).has(jid);
-}
-
-const REACTION_ACK_LABELS = { 0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK', 3: 'DELIVERY_ACK', 4: 'READ', 5: 'PLAYED' };
-const REACTION_SEND_MAX_ATTEMPTS = 3;
-const REACTION_ACK_WAIT_MS = 6000;
-
-/**
- * Every prior test showed the same thing: correct key, correct target,
- * "sent successfully" locally — and then NOTHING, ever, not even a
- * SERVER_ACK. Meanwhile the logs from those same windows showed other
- * bots on this instance disconnecting (statusCode 408) and reconnecting
- * every few seconds. That combination means the send is very likely
- * landing on a socket that's mid-reconnect and getting silently dropped
- * — a connection-health problem, not a targeting bug.
- *
- * The fix for a flaky connection is not "log more" — it's retry with
- * confirmation. This waits for a real SERVER_ACK (or better) after each
- * send attempt; if none arrives within a few seconds, it tries again
- * (up to REACTION_SEND_MAX_ATTEMPTS times) rather than accepting Baileys'
- * local "it sent" as good enough, which the evidence says it is not.
- */
-function isSocketOpen(sock) {
-  const ws = sock?.ws;
-  // Baileys' underlying transport exposes readyState directly on some
-  // versions, and via a wrapped .socket on others — check both rather
-  // than assuming one shape and silently treating "open" as "unknown".
-  const state = ws?.readyState ?? ws?.socket?.readyState;
-  return state === 1; // WebSocket.OPEN
-}
-
-function waitForReactionAck(sock, reactionMsgId, timeoutMs) {
-  return new Promise((resolve) => {
-    if (!reactionMsgId) return resolve(null);
-    let settled = false;
-    const finish = (status) => {
-      if (settled) return;
-      settled = true;
-      sock.ev.off('messages.update', handler);
-      clearTimeout(timer);
-      resolve(status);
-    };
-    const handler = (updates) => {
-      for (const u of updates) {
-        if (u.key?.id !== reactionMsgId) continue;
-        const status = u.update?.status;
-        // 2 = SERVER_ACK. That's the minimum bar for "WhatsApp's server
-        // actually has this" — below that, nothing downstream happened.
-        if (typeof status === 'number' && status >= 2) return finish(status);
-      }
-    };
-    const timer = setTimeout(() => finish(null), timeoutMs);
-    sock.ev.on('messages.update', handler);
-  });
-}
-
-async function sendStatusReactionWithRetry(sock, reactionKey, emoji, opts, statusId) {
-  for (let attempt = 1; attempt <= REACTION_SEND_MAX_ATTEMPTS; attempt++) {
-    if (!isSocketOpen(sock)) {
-      // Sending into a dead/reconnecting socket is exactly the failure
-      // mode the logs showed — wait briefly for it to come back up
-      // rather than firing into it anyway.
-      logger.warn({ statusId, attempt }, 'Socket not open when attempting status reaction, waiting before send');
-      await randomDelay(1000, 2500);
-    }
-
-    let sentId = null;
-    try {
-      const sent = await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
-      sentId = sent?.key?.id;
-    } catch (err) {
-      logger.warn({ err, statusId, attempt }, 'Status reaction send threw, will retry if attempts remain');
-    }
-
-    if (sentId) {
-      const ackStatus = await waitForReactionAck(sock, sentId, REACTION_ACK_WAIT_MS);
-      if (ackStatus !== null) {
-        logger.info(
-          { statusId, attempt, reactionMsgId: sentId, ackStatus, ackLabel: REACTION_ACK_LABELS[ackStatus] || ackStatus },
-          'Status reaction confirmed by server'
-        );
-        return { confirmed: true, attempt, reactionMsgId: sentId, ackStatus };
-      }
-      logger.warn({ statusId, attempt, reactionMsgId: sentId }, 'No server ack for status reaction within timeout, retrying');
-    }
-
-    if (attempt < REACTION_SEND_MAX_ATTEMPTS) await randomDelay(1500, 3000);
-  }
-  logger.error({ statusId }, `Status reaction unconfirmed after ${REACTION_SEND_MAX_ATTEMPTS} attempts — giving up`);
-  return { confirmed: false };
-}
-
 async function reactToStatus(sock, msg, stealthMode) {
   // WhatsApp's status viewer sheet only ever renders the native heart badge
   // for a status reaction, no matter what emoji is actually sent underneath.
@@ -355,21 +225,6 @@ async function reactToStatus(sock, msg, stealthMode) {
   // The reaction's key has to carry the same resolved/addressable identity
   // that we're actually building sessions for below.
   const preferredParticipant = participantAlt || resolvedParticipant || participant;
-
-  // Last-resort guard, at the point of actually sending: if resolving the
-  // @lid landed us on one of our OWN identities (e.g. a stale/incorrect
-  // signalRepository mapping), refuse to send rather than firing a
-  // self-reaction. registerStatusHandler already checks this on the raw
-  // participant before we ever get here, but resolvedParticipant is
-  // computed fresh in this function, so it gets its own check too.
-  if (isOwnJid(sock, preferredParticipant)) {
-    logger.warn(
-      { participant, participantAlt, resolvedParticipant, preferredParticipant },
-      'Resolved status-reaction target is our own account — refusing to send self-reaction'
-    );
-    return { emoji, skipped: true, reason: 'resolved_to_own_jid', participant, participantAlt, resolvedParticipant, preferredParticipant };
-  }
-
   const reactionKey = { ...msg.key, participant: preferredParticipant };
 
   // Resolved/preferred form first — some contacts only resolve after this
@@ -380,30 +235,11 @@ async function reactToStatus(sock, msg, stealthMode) {
       [preferredParticipant, participantAlt, resolvedParticipant, participant, selfJid].filter(Boolean)
     ),
   ];
-  // Every other status@broadcast send in this codebase (scheduler.js,
-  // client.js, admin.js — all posting your OWN status) includes
-  // `broadcast: true` alongside statusJidList. This reaction send was the
-  // only one missing it. Without it, Baileys has no signal that this
-  // send should be treated as status-type traffic rather than an
-  // ordinary chat message addressed to the unusual 'status@broadcast'
-  // JID — which is consistent with everything we've seen: it reports
-  // success, but never renders as an actual status reaction on the
-  // recipient's side.
-  const opts = statusJidList.length > 0 ? { statusJidList, broadcast: true } : { broadcast: true };
+  const opts = statusJidList.length > 0 ? { statusJidList } : undefined;
 
   try {
     if (needsToggle) await sock.updateReadReceiptsPrivacy('all');
-    const result = await sendStatusReactionWithRetry(sock, reactionKey, emoji, opts, msg.key.id);
-    return {
-      emoji,
-      participant,
-      participantAlt,
-      resolvedParticipant,
-      preferredParticipant,
-      statusJidList,
-      reactionKey,
-      ...result,
-    };
+    await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
   } finally {
     if (needsToggle) {
       try {
@@ -413,6 +249,7 @@ async function reactToStatus(sock, msg, stealthMode) {
       }
     }
   }
+  return { emoji, participant, participantAlt, resolvedParticipant, preferredParticipant, statusJidList, reactionKey };
 }
 
 async function saveStatusIfMedia(botId, msg, messageType, caption, contactJid) {
@@ -456,53 +293,12 @@ function registerStatusHandler(sock, botId) {
       if (msg.key?.remoteJid !== STATUS_JID) continue;
       if (!msg.message) continue;
       if (!msg.key.id) continue;
-
-      // Diagnostic snapshot of every status event this bot sees, taken
-      // BEFORE any filtering below. If a self-status ever slips through
-      // both guards that follow, this line is what tells us why (e.g.
-      // fromMe:false and participant already equal to one of ourJids, or
-      // participant in a JID form ourJids doesn't recognize yet).
-      const ourJids = getOwnJidCandidates(sock);
-      // Logged at info level (not debug) deliberately: this is the exact
-      // line needed to diagnose a self-reaction bug, and this project's
-      // logger defaults to 'info' — at 'debug' it would go unseen in a
-      // normal run and the next report would have no evidence in it again.
-      logger.info(
-        {
-          botId,
-          fromMe: msg.key.fromMe,
-          participant: msg.key.participant,
-          participantAlt: msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid,
-          remoteJid: msg.key.remoteJid,
-          statusId: msg.key.id,
-          ourJids: [...ourJids],
-        },
-        'Status event received'
-      );
-
       // This is the bot's own status post coming back through the same
       // event stream — view/react logic is only ever meant to apply to
       // OTHER people's statuses. Without this check, every status the bot
       // posts (manual or scheduled) gets "viewed" and "reacted to" by
       // itself, which is exactly the "reacting to my own status" bug.
       if (msg.key.fromMe) continue;
-
-      // Second, independent guard: compare the status owner's JID (in
-      // every form we have — raw participant, server-supplied alt, and
-      // our own identity in every form) directly, instead of relying only
-      // on fromMe. This is a belt-and-suspenders check for exactly the
-      // failure mode above — it must never be reached for a genuine own
-      // status, but if fromMe is ever wrong, this is what actually stops
-      // the bot from reacting to itself.
-      const ownerJid = msg.key.participant || msg.key.remoteJid;
-      const ownerAlt = msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid;
-      if (isOwnJid(sock, ownerJid) || isOwnJid(sock, ownerAlt)) {
-        logger.warn(
-          { botId, ownerJid, ownerAlt, fromMe: msg.key.fromMe, statusId: msg.key.id },
-          'Status owner resolved to the bot\'s own account even though fromMe was false — skipping (fromMe appears unreliable for this event)'
-        );
-        continue;
-      }
 
       // Skip if we've already handled this exact status update for this bot.
       if (alreadyProcessed(botId, msg.key.id)) continue;
