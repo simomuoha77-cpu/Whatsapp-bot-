@@ -148,14 +148,13 @@ function sanitizeFilenamePart(s) {
 
 /**
  * WhatsApp is migrating contacts to opaque @lid identifiers. When a status
- * update's participant only comes through as @lid (confirmed via server
- * logs — no participantAlt/participantPn/participantLid present at all in
- * this environment), reactions addressed purely to that @lid frequently
- * don't resolve into anything the poster's device displays, even though
- * the send itself reports success. Baileys keeps its own PN<->LID mapping
- * in the signal repository (built up as it interacts with each contact) —
- * this looks it up and returns the phone-number JID when available,
- * falling back to the original @lid if there's no mapping yet.
+ * update's participant only comes through as @lid, reactions addressed
+ * purely to that @lid frequently don't resolve into anything the poster's
+ * device displays, even though the send itself reports success. Baileys
+ * keeps its own PN<->LID mapping in the signal repository (built up as it
+ * interacts with each contact) — this looks it up and returns the
+ * phone-number JID when available, falling back to the original @lid if
+ * there's no mapping yet.
  */
 async function resolveToPhoneJid(sock, jid) {
   if (!jid || !jid.endsWith('@lid')) return jid;
@@ -170,10 +169,8 @@ async function resolveToPhoneJid(sock, jid) {
 
 /**
  * The socket's own JID comes back as "<number>:<device>@s.whatsapp.net".
- * Every other place in this codebase (antiViewOnce.js, messageHandler.js,
- * order.js) strips the ":<device>" part before treating it as a JID for
- * session/addressing purposes — do the same here instead of pushing the
- * raw device-suffixed form into statusJidList.
+ * Strip the ":<device>" suffix before treating it as a plain JID, matching
+ * how the rest of the codebase normalizes self-identity.
  */
 function normalizeSelfJid(rawId) {
   if (!rawId) return null;
@@ -183,20 +180,12 @@ function normalizeSelfJid(rawId) {
 
 /**
  * Every identifier Baileys might use to refer to THIS bot's own account —
- * phone-number JID, its own @lid, and the device-suffixed raw form — so a
- * status can be matched against "is this actually us" regardless of which
- * form the participant field happens to arrive in for a given event.
- *
- * fromMe is supposed to be the authoritative signal for "this is our own
- * status" (see the check right after this in registerStatusHandler), but
- * it's a flag Baileys derives from the raw stanza's `from`/`participant`
- * attrs — if a status ever gets redelivered through a path where that
- * derivation is wrong (multi-device history sync, a stanza addressed via
- * @lid before the LID<->PN mapping existed, etc.), fromMe can end up false
- * for a status that is, in fact, ours. This is the second, JID-based line
- * of defense: even if fromMe misses it, comparing the status owner's JID
- * (in every form we know how to compute) against every form of our own
- * identity catches it here instead.
+ * used only as a safety guard against ever reacting to our own status
+ * (see isOwnJid below). This is NOT used to build statusJidList — a
+ * reaction's statusJidList describes the STATUS OWNER being reacted to,
+ * never the reacting bot's own identity. Mixing the two was the actual bug:
+ * including our own JID in that list is exactly backwards for reacting to
+ * someone else's status.
  */
 function getOwnJidCandidates(sock) {
   const candidates = new Set();
@@ -234,45 +223,24 @@ async function reactToStatus(sock, msg, stealthMode) {
   // resolves locally (which only means "the request went out", not "the
   // server has processed it yet") and the reaction gets silently dropped:
   // no error, view still shows, but no heart ever appears for the poster.
-  // This is a fixed, short buffer for correctness, not pacing for
-  // anti-detection — it's the minimum gap needed for the reaction to
-  // actually register.
   await randomDelay(REACT_MIN_GAP_MS, REACT_MIN_GAP_MS + 800);
 
   // Read Receipts privacy gates BOTH whether a view registers AND whether a
-  // reaction is ever shown to the poster — same underlying WhatsApp
-  // mechanism as the view toggle above. The view's own toggle flips privacy
-  // back off right after readMessages() resolves, which happens *before*
-  // this reaction fires (reactions are queued separately with their own
-  // 2.5s+ delay). So by the time we get here, receipts may already be back
-  // off — meaning the reaction goes out "successfully" but WhatsApp never
-  // tells the poster about it. This toggle is reaction's own copy of the
-  // same fix, scoped to just this send.
+  // reaction is ever shown to the poster. The view's own toggle flips
+  // privacy back off right after readMessages() resolves, which happens
+  // *before* this reaction fires (reactions are queued separately with
+  // their own delay). So by the time we get here, receipts may already be
+  // back off — this toggle is the reaction's own copy of that same fix,
+  // scoped to just this send.
   const needsToggle = (stealthMode || 'normal') !== 'normal';
 
   const participant = msg.key.participant;
-  // participantAlt/participantPn is the phone-number counterpart WhatsApp's
-  // own server attaches directly to this message when participant is a
-  // @lid — trust that over a locally-derived lookup when it's present.
   const participantAlt = msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid;
   const resolvedParticipant = await resolveToPhoneJid(sock, participant);
-  const selfJid = normalizeSelfJid(sock.user?.id);
-
-  // THE ACTUAL BUG: this used to compute resolvedParticipant above and then
-  // throw it away, sending the reaction with the *original* msg.key — so if
-  // participant only ever arrived as an unmapped @lid, the reaction was
-  // encrypted and "sent successfully" but keyed to an identity the owner's
-  // device can't attach to anything, and it never rendered on their side.
-  // The reaction's key has to carry the same resolved/addressable identity
-  // that we're actually building sessions for below.
   const preferredParticipant = participantAlt || resolvedParticipant || participant;
 
-  // Last-resort guard, at the point of actually sending: if resolving the
-  // @lid landed us on one of our OWN identities (e.g. a stale/incorrect
-  // signalRepository mapping), refuse to send rather than firing a
-  // self-reaction. registerStatusHandler already checks this on the raw
-  // participant before we ever get here, but resolvedParticipant is
-  // computed fresh in this function, so it gets its own check too.
+  // Safety guard: never react to our own status even if participant
+  // resolution somehow lands on one of our own identities.
   if (isOwnJid(sock, preferredParticipant)) {
     logger.warn(
       { participant, participantAlt, resolvedParticipant, preferredParticipant },
@@ -281,21 +249,33 @@ async function reactToStatus(sock, msg, stealthMode) {
     return { emoji, skipped: true, reason: 'resolved_to_own_jid', participant, participantAlt, resolvedParticipant, preferredParticipant };
   }
 
+  // reactionKey: the exact status being reacted to (same remoteJid/id as
+  // msg.key), with participant forced to the best-resolved owner identity.
   const reactionKey = { ...msg.key, participant: preferredParticipant };
 
-  // Resolved/preferred form first — some contacts only resolve after this
-  // point (e.g. session established moments ago), so keep every candidate
-  // form in the list, but the one we're actually addressing goes first.
-  const statusJidList = [
-    ...new Set(
-      [preferredParticipant, participantAlt, resolvedParticipant, participant, selfJid].filter(Boolean)
-    ),
-  ];
-  const opts = statusJidList.length > 0 ? { statusJidList } : undefined;
+  // statusJidList contains ONLY the status owner's address — the bot's own
+  // JID must NEVER appear here. This was the actual persisting bug: an
+  // earlier version of this list included selfJid alongside the owner's
+  // JIDs, which is backwards for reacting to someone else's status.
+  const statusJidList = [...new Set([preferredParticipant].filter(Boolean))];
+  const opts = { statusJidList, broadcast: true };
 
+  const diagnostic = {
+    botAuthenticatedAs: sock.user?.id,
+    botLid: sock.user?.lid,
+    statusOwnerParticipant: participant,
+    statusOwnerParticipantAlt: msg.key.participantAlt,
+    statusOwnerParticipantPn: msg.key.participantPn,
+    statusOwnerParticipantLid: msg.key.participantLid,
+    preferredParticipant,
+    statusJidList,
+    reactionKey,
+  };
+
+  let sendResult;
   try {
     if (needsToggle) await sock.updateReadReceiptsPrivacy('all');
-    await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
+    sendResult = await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
   } finally {
     if (needsToggle) {
       try {
@@ -305,7 +285,7 @@ async function reactToStatus(sock, msg, stealthMode) {
       }
     }
   }
-  return { emoji, participant, participantAlt, resolvedParticipant, preferredParticipant, statusJidList, reactionKey };
+  return { emoji, reactionMsgId: sendResult?.key?.id, ...diagnostic };
 }
 
 async function saveStatusIfMedia(botId, msg, messageType, caption, contactJid) {
@@ -349,53 +329,12 @@ function registerStatusHandler(sock, botId) {
       if (msg.key?.remoteJid !== STATUS_JID) continue;
       if (!msg.message) continue;
       if (!msg.key.id) continue;
-
-      // Diagnostic snapshot of every status event this bot sees, taken
-      // BEFORE any filtering below. If a self-status ever slips through
-      // both guards that follow, this line is what tells us why (e.g.
-      // fromMe:false and participant already equal to one of ourJids, or
-      // participant in a JID form ourJids doesn't recognize yet).
-      const ourJids = getOwnJidCandidates(sock);
-      // Logged at info level (not debug) deliberately: this is the exact
-      // line needed to diagnose a self-reaction bug, and this project's
-      // logger defaults to 'info' — at 'debug' it would go unseen in a
-      // normal run and the next report would have no evidence in it again.
-      logger.info(
-        {
-          botId,
-          fromMe: msg.key.fromMe,
-          participant: msg.key.participant,
-          participantAlt: msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid,
-          remoteJid: msg.key.remoteJid,
-          statusId: msg.key.id,
-          ourJids: [...ourJids],
-        },
-        'Status event received'
-      );
-
       // This is the bot's own status post coming back through the same
       // event stream — view/react logic is only ever meant to apply to
       // OTHER people's statuses. Without this check, every status the bot
       // posts (manual or scheduled) gets "viewed" and "reacted to" by
       // itself, which is exactly the "reacting to my own status" bug.
       if (msg.key.fromMe) continue;
-
-      // Second, independent guard: compare the status owner's JID (in
-      // every form we have — raw participant, server-supplied alt, and
-      // our own identity in every form) directly, instead of relying only
-      // on fromMe. This is a belt-and-suspenders check for exactly the
-      // failure mode above — it must never be reached for a genuine own
-      // status, but if fromMe is ever wrong, this is what actually stops
-      // the bot from reacting to itself.
-      const ownerJid = msg.key.participant || msg.key.remoteJid;
-      const ownerAlt = msg.key.participantAlt || msg.key.participantPn || msg.key.participantLid;
-      if (isOwnJid(sock, ownerJid) || isOwnJid(sock, ownerAlt)) {
-        logger.warn(
-          { botId, ownerJid, ownerAlt, fromMe: msg.key.fromMe, statusId: msg.key.id },
-          'Status owner resolved to the bot\'s own account even though fromMe was false — skipping (fromMe appears unreliable for this event)'
-        );
-        continue;
-      }
 
       // Skip if we've already handled this exact status update for this bot.
       if (alreadyProcessed(botId, msg.key.id)) continue;
@@ -464,7 +403,10 @@ function registerStatusHandler(sock, botId) {
             // itself no longer waits before sending.
             enqueueReaction(botId, async () => {
               const result = await reactToStatus(sock, msg, features.stealth_read_mode);
-              logger.info({ botId, contactJid, statusId: msg.key.id, originalKey: msg.key, ...result }, 'Reacted to status');
+              logger.info(
+                { botId, contactJid, statusId: msg.key.id, ...result, originalKey: msg.key, botAuthenticatedAs: sock.user?.id, botLid: sock.user?.lid },
+                'Reacted to status'
+              );
             });
           }
         });
@@ -472,7 +414,10 @@ function registerStatusHandler(sock, botId) {
         // Viewing is off but reacting is on — still react on its own, every time.
         enqueueReaction(botId, async () => {
           const result = await reactToStatus(sock, msg, features.stealth_read_mode);
-          logger.info({ botId, contactJid, statusId: msg.key.id, originalKey: msg.key, ...result }, 'Reacted to status');
+          logger.info(
+            { botId, contactJid, statusId: msg.key.id, ...result, originalKey: msg.key, botAuthenticatedAs: sock.user?.id, botLid: sock.user?.lid },
+            'Reacted to status'
+          );
         });
       }
 
