@@ -17,7 +17,28 @@ const {
   markReminderRun,
 } = require('../db/reminders');
 const { getBotState, getKnownContactJids } = require('../utils/botManager');
+const { getAllContactJids } = require('../db/contacts');
 const { recordOwnStatusPost } = require('../db/ownStatusPosts');
+
+/**
+ * Builds the statusJidList Baileys needs to actually deliver/encrypt a
+ * status post. The in-memory cache from botManager (contacts.upsert /
+ * messaging-history.set) is frequently empty because these bots don't do a
+ * full history sync. The DB contacts table is the reliable source — it's
+ * populated on every inbound message (see messageHandler.js) and persists
+ * across restarts. We merge both and dedupe.
+ *
+ * Text-only status posts can silently "succeed" with an empty/omitted list
+ * (they just get 0 views), which is why this bug only shows up for
+ * image/video posts: WhatsApp needs the recipient list to know who to
+ * encrypt the media for, and without it the media status never actually
+ * gets created server-side.
+ */
+async function buildStatusJidList(botId) {
+  const known = getKnownContactJids(botId);
+  const persisted = await getAllContactJids(botId).catch(() => []);
+  return Array.from(new Set([...known, ...persisted]));
+}
 
 const activeJobs = new Map();
 
@@ -54,17 +75,11 @@ async function postScheduledStatus(post) {
   try {
     const message = buildMessagePayload(post);
     if (!message) return;
-    // Only pass statusJidList when we actually have contacts to put in it.
-    // An EMPTY list is not "no preference" — it explicitly tells WhatsApp
-    // "deliver to nobody," which text quietly tolerates (hence it always
-    // showing 0 views) but which can make image/video status uploads fail
-    // outright, since WhatsApp needs that list to know how to encrypt/
-    // distribute the media at all. With no history sync, this bot's
-    // contacts cache is often empty — so omit the option and let WhatsApp
-    // fall back to its own default audience (the account's status privacy
-    // list), same as plain sendMessage('status@broadcast', ...) does.
-    const knownContacts = getKnownContactJids(post.bot_id);
-    const sendOpts = knownContacts.length > 0 ? { statusJidList: knownContacts } : undefined;
+    const statusJidList = await buildStatusJidList(post.bot_id);
+    if (statusJidList.length === 0) {
+      logger.warn({ postId: post.id, botId: post.bot_id }, 'No known contacts yet — status post will be created but nobody will be able to see it until the bot has contacts');
+    }
+    const sendOpts = statusJidList.length > 0 ? { statusJidList, broadcast: true } : undefined;
     const sent = await botState.sock.sendMessage('status@broadcast', message, sendOpts);
     if (sent?.key?.id) {
       await recordOwnStatusPost(post.bot_id, sent.key.id, { source: 'scheduled', caption: post.caption });
@@ -174,4 +189,4 @@ async function refreshScheduler() {
   await startScheduler();
 }
 
-module.exports = { startScheduler, refreshScheduler };
+module.exports = { startScheduler, refreshScheduler, buildStatusJidList };

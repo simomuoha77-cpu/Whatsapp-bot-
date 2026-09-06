@@ -38,8 +38,8 @@ const { recordOwnStatusPost, getRecentPostsWithViewers } = require('../db/ownSta
 const { getPricingSettings, updatePricingSettings, updateTutorialUrl } = require('../db/pricingSettings');
 const { getSubscription, isSubscriptionActive, extendSubscriptionByYMD, setSubscriptionExpiry } = require('../db/subscriptions');
 const { getPaymentsForBot } = require('../db/payments');
-const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids } = require('../utils/botManager');
-const { refreshScheduler } = require('./scheduler');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
+const { refreshScheduler, buildStatusJidList } = require('./scheduler');
 
 function layout(title, body) {
   return `
@@ -1099,9 +1099,11 @@ function createAdminRoutes() {
     }
 
     try {
-      // See scheduler.js for why an empty statusJidList is worse than omitting it.
-      const knownContacts = getKnownContactJids(botId);
-      const sendOpts = knownContacts.length > 0 ? { statusJidList: knownContacts } : undefined;
+      // See scheduler.js's buildStatusJidList — text-only posts can look
+      // like they "worked" with an empty/omitted list, but media posts
+      // need a real statusJidList or they never actually get created.
+      const statusJidList = await buildStatusJidList(botId);
+      const sendOpts = statusJidList.length > 0 ? { statusJidList, broadcast: true } : undefined;
       const sent = await live.sock.sendMessage('status@broadcast', { text: caption }, sendOpts);
       if (sent?.key?.id) {
         await recordOwnStatusPost(botId, sent.key.id, { source: 'manual', caption });

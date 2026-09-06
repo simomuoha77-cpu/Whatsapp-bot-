@@ -7,7 +7,7 @@ const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, e
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
-const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, getKnownContactJids } = require('../utils/botManager');
+const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { getDb } = require('../db/mongo');
 const {
   FEATURE_COLUMNS,
@@ -37,7 +37,7 @@ const {
 } = require('../db/scheduledGroupPosts');
 const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
 const { resolveSchedule } = require('../utils/scheduleTime');
-const { refreshScheduler } = require('./scheduler');
+const { refreshScheduler, buildStatusJidList } = require('./scheduler');
 const { getProductsForBot, addProduct, deleteProduct } = require('../db/products');
 const { getOrdersForBot, getOrderById, setOrderStatus } = require('../db/orders');
 const { getMessageStatsForBot } = require('../db/messages');
@@ -764,9 +764,12 @@ function createClientRoutes() {
     }
 
     try {
-      // See scheduler.js for why an empty statusJidList is worse than omitting it.
-      const knownContacts = getKnownContactJids(botId);
-      const sendOpts = knownContacts.length > 0 ? { statusJidList: knownContacts } : undefined;
+      // See scheduler.js's buildStatusJidList for why we need the DB-backed
+      // contacts list (not just the in-memory cache) and broadcast:true —
+      // without a real statusJidList, media status posts never actually
+      // get created on WhatsApp's side, even though sendMessage resolves.
+      const statusJidList = await buildStatusJidList(botId);
+      const sendOpts = statusJidList.length > 0 ? { statusJidList, broadcast: true } : undefined;
       const sent = await live.sock.sendMessage('status@broadcast', { text: caption }, sendOpts);
       if (sent?.key?.id) {
         await recordOwnStatusPost(botId, sent.key.id, { source: 'manual', caption });
