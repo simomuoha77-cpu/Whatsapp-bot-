@@ -223,38 +223,92 @@ function isOwnJid(sock, jid) {
 }
 
 const REACTION_ACK_LABELS = { 0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK', 3: 'DELIVERY_ACK', 4: 'READ', 5: 'PLAYED' };
+const REACTION_SEND_MAX_ATTEMPTS = 3;
+const REACTION_ACK_WAIT_MS = 6000;
 
 /**
- * sock.sendMessage() resolving does NOT mean the reaction reached the
- * recipient's device — it only means WhatsApp's server accepted the
- * stanza. A reaction is real encrypted message content (unlike a status
- * *view*, which is just an unencrypted receipt), so it can silently fail
- * at the encryption/session layer between these two specific accounts
- * even though the send call itself reports success.
+ * Every prior test showed the same thing: correct key, correct target,
+ * "sent successfully" locally — and then NOTHING, ever, not even a
+ * SERVER_ACK. Meanwhile the logs from those same windows showed other
+ * bots on this instance disconnecting (statusCode 408) and reconnecting
+ * every few seconds. That combination means the send is very likely
+ * landing on a socket that's mid-reconnect and getting silently dropped
+ * — a connection-health problem, not a targeting bug.
  *
- * This watches messages.update for the reaction's own message id and logs
- * every ack level WhatsApp reports for it (SERVER_ACK vs DELIVERY_ACK vs
- * READ). If it only ever reaches SERVER_ACK and never DELIVERY_ACK, that's
- * concrete proof of a session/delivery problem between this bot and this
- * specific contact — not a targeting/key bug — and the fix is re-syncing
- * or re-establishing the session with them, not further changes here.
+ * The fix for a flaky connection is not "log more" — it's retry with
+ * confirmation. This waits for a real SERVER_ACK (or better) after each
+ * send attempt; if none arrives within a few seconds, it tries again
+ * (up to REACTION_SEND_MAX_ATTEMPTS times) rather than accepting Baileys'
+ * local "it sent" as good enough, which the evidence says it is not.
  */
-function trackReactionAck(sock, reactionMsgId, context) {
-  if (!reactionMsgId) return;
-  const handler = (updates) => {
-    for (const u of updates) {
-      if (u.key?.id !== reactionMsgId) continue;
-      const statusCode = u.update?.status;
-      logger.info(
-        { ...context, reactionMsgId, ackStatus: statusCode, ackLabel: REACTION_ACK_LABELS[statusCode] || statusCode },
-        'Status reaction message ack update'
-      );
+function isSocketOpen(sock) {
+  const ws = sock?.ws;
+  // Baileys' underlying transport exposes readyState directly on some
+  // versions, and via a wrapped .socket on others — check both rather
+  // than assuming one shape and silently treating "open" as "unknown".
+  const state = ws?.readyState ?? ws?.socket?.readyState;
+  return state === 1; // WebSocket.OPEN
+}
+
+function waitForReactionAck(sock, reactionMsgId, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!reactionMsgId) return resolve(null);
+    let settled = false;
+    const finish = (status) => {
+      if (settled) return;
+      settled = true;
+      sock.ev.off('messages.update', handler);
+      clearTimeout(timer);
+      resolve(status);
+    };
+    const handler = (updates) => {
+      for (const u of updates) {
+        if (u.key?.id !== reactionMsgId) continue;
+        const status = u.update?.status;
+        // 2 = SERVER_ACK. That's the minimum bar for "WhatsApp's server
+        // actually has this" — below that, nothing downstream happened.
+        if (typeof status === 'number' && status >= 2) return finish(status);
+      }
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    sock.ev.on('messages.update', handler);
+  });
+}
+
+async function sendStatusReactionWithRetry(sock, reactionKey, emoji, opts, statusId) {
+  for (let attempt = 1; attempt <= REACTION_SEND_MAX_ATTEMPTS; attempt++) {
+    if (!isSocketOpen(sock)) {
+      // Sending into a dead/reconnecting socket is exactly the failure
+      // mode the logs showed — wait briefly for it to come back up
+      // rather than firing into it anyway.
+      logger.warn({ statusId, attempt }, 'Socket not open when attempting status reaction, waiting before send');
+      await randomDelay(1000, 2500);
     }
-  };
-  sock.ev.on('messages.update', handler);
-  setTimeout(() => {
-    sock.ev.off('messages.update', handler);
-  }, 20000);
+
+    let sentId = null;
+    try {
+      const sent = await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
+      sentId = sent?.key?.id;
+    } catch (err) {
+      logger.warn({ err, statusId, attempt }, 'Status reaction send threw, will retry if attempts remain');
+    }
+
+    if (sentId) {
+      const ackStatus = await waitForReactionAck(sock, sentId, REACTION_ACK_WAIT_MS);
+      if (ackStatus !== null) {
+        logger.info(
+          { statusId, attempt, reactionMsgId: sentId, ackStatus, ackLabel: REACTION_ACK_LABELS[ackStatus] || ackStatus },
+          'Status reaction confirmed by server'
+        );
+        return { confirmed: true, attempt, reactionMsgId: sentId, ackStatus };
+      }
+      logger.warn({ statusId, attempt, reactionMsgId: sentId }, 'No server ack for status reaction within timeout, retrying');
+    }
+
+    if (attempt < REACTION_SEND_MAX_ATTEMPTS) await randomDelay(1500, 3000);
+  }
+  logger.error({ statusId }, `Status reaction unconfirmed after ${REACTION_SEND_MAX_ATTEMPTS} attempts — giving up`);
+  return { confirmed: false };
 }
 
 async function reactToStatus(sock, msg, stealthMode) {
@@ -330,11 +384,7 @@ async function reactToStatus(sock, msg, stealthMode) {
 
   try {
     if (needsToggle) await sock.updateReadReceiptsPrivacy('all');
-    const sent = await sock.sendMessage(STATUS_JID, { react: { text: emoji, key: reactionKey } }, opts);
-    trackReactionAck(sock, sent?.key?.id, {
-      statusId: msg.key.id,
-      preferredParticipant,
-    });
+    const result = await sendStatusReactionWithRetry(sock, reactionKey, emoji, opts, msg.key.id);
     return {
       emoji,
       participant,
@@ -343,7 +393,7 @@ async function reactToStatus(sock, msg, stealthMode) {
       preferredParticipant,
       statusJidList,
       reactionKey,
-      reactionMsgId: sent?.key?.id,
+      ...result,
     };
   } finally {
     if (needsToggle) {
