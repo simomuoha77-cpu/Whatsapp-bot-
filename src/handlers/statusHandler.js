@@ -298,7 +298,7 @@ function registerStatusHandler(sock, botId) {
             // itself no longer waits before sending.
             enqueueReaction(botId, async () => {
               const emoji = await reactToStatus(sock, msg);
-              logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+              logger.info({ botId, contactJid, statusId: msg.key.id, emoji, key: msg.key }, 'Reacted to status');
             });
           }
         });
@@ -306,7 +306,7 @@ function registerStatusHandler(sock, botId) {
         // Viewing is off but reacting is on — still react on its own, every time.
         enqueueReaction(botId, async () => {
           const emoji = await reactToStatus(sock, msg);
-          logger.info({ botId, contactJid, statusId: msg.key.id, emoji }, 'Reacted to status');
+          logger.info({ botId, contactJid, statusId: msg.key.id, emoji, key: msg.key }, 'Reacted to status');
         });
       }
 
