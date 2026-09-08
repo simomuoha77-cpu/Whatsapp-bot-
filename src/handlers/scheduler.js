@@ -135,28 +135,43 @@ async function startScheduler() {
 
   const posts = await getActiveRecurringStatusPosts();
   for (const post of posts) {
-    if (!cron.validate(post.cron_expression)) continue;
+    if (!cron.validate(post.cron_expression)) {
+      logger.error({ postId: post.id, botId: post.bot_id, cronExpression: post.cron_expression }, 'Skipping scheduled status post — invalid cron expression, this post will NEVER fire until fixed');
+      continue;
+    }
     const job = cron.schedule(post.cron_expression, () => postScheduledStatus(post), { timezone: post.timezone || 'UTC' });
     activeJobs.set(`status:${post.id}`, job);
   }
 
   const recurringGroupPosts = await getActiveRecurringGroupPosts();
   for (const post of recurringGroupPosts) {
-    if (!cron.validate(post.cron_expression)) continue;
+    if (!cron.validate(post.cron_expression)) {
+      logger.error({ postId: post.id, botId: post.bot_id, groupJid: post.group_jid, cronExpression: post.cron_expression }, 'Skipping scheduled group post — invalid cron expression, this post will NEVER fire until fixed');
+      continue;
+    }
     const job = cron.schedule(post.cron_expression, () => postScheduledGroupPost(post), { timezone: post.timezone || 'UTC' });
     activeJobs.set(`group:${post.id}`, job);
   }
 
   const reminders = await getActiveRecurringReminders();
   for (const reminder of reminders) {
-    if (!cron.validate(reminder.cron_expression)) continue;
+    if (!cron.validate(reminder.cron_expression)) {
+      logger.error({ reminderId: reminder.id, botId: reminder.bot_id, cronExpression: reminder.cron_expression }, 'Skipping scheduled reminder — invalid cron expression, this reminder will NEVER fire until fixed');
+      continue;
+    }
     const job = cron.schedule(reminder.cron_expression, () => sendReminder(reminder));
     activeJobs.set(`reminder:${reminder.id}`, job);
   }
 
-  // One-off, run-once-at-a-specific-date items — checked every minute,
-  // same pattern as reminders' existing one-off check.
-  cron.schedule('* * * * *', async () => {
+  // One-off, run-once-at-a-specific-date items — checked every minute, same
+  // pattern as reminders' existing one-off check. This job itself must be
+  // tracked in activeJobs like every other job above: startScheduler() runs
+  // again on every single create/edit/cancel/delete (via refreshScheduler()),
+  // and without tracking this one, every single refresh silently left the
+  // PREVIOUS minute-checker running forever and created a brand new one on
+  // top of it — an ever-growing pile of duplicate checkers that never got
+  // cleaned up, all racing to process the same due posts.
+  const oneOffJob = cron.schedule('* * * * *', async () => {
     try {
       const due = await getDueOneOffReminders();
       for (const reminder of due) await sendReminder(reminder);
@@ -178,6 +193,7 @@ async function startScheduler() {
       logger.error({ err }, 'Error checking due one-off status posts');
     }
   });
+  activeJobs.set('one-off-checker', oneOffJob);
 
   logger.info(
     { statusPosts: posts.length, recurringGroupPosts: recurringGroupPosts.length, recurringReminders: reminders.length },
