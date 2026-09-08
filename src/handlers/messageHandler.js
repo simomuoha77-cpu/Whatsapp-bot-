@@ -250,6 +250,17 @@ function registerMessageHandler(sock, botId) {
             // silently failing/broken. Anti-delete always shows *something*
             // even when nothing was captured; .v should behave the same way
             // instead of going silent.
+            // Diagnostic: if the dashboard shows this toggle ON but this
+            // still fires, botId here (the live WhatsApp session actually
+            // handling this message) may not match the botId the dashboard
+            // session is editing — two different bot records for what looks
+            // like "the same bot" to the user, likely from a relink/reset
+            // along the way. Logging the exact values read lets us confirm
+            // that instead of guessing.
+            logger.warn(
+              { botId, anti_view_once_enabled: viewOnceFeatures?.anti_view_once_enabled, viewOnceFeaturesLoaded: !!viewOnceFeatures },
+              '.v command blocked: anti_view_once_enabled read as falsy for this botId — compare against the botId your dashboard session is actually editing'
+            );
             await sock.sendMessage(sender, {
               text: 'Anti View Once is not enabled for this bot. Turn it on in your dashboard settings, then .v will work here.',
             });
