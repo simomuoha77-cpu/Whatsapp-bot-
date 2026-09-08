@@ -244,6 +244,15 @@ function registerMessageHandler(sock, botId) {
                 });
               }
             }
+          } else {
+            // Previously this fell straight through with zero feedback when
+            // the feature was off — indistinguishable from the command
+            // silently failing/broken. Anti-delete always shows *something*
+            // even when nothing was captured; .v should behave the same way
+            // instead of going silent.
+            await sock.sendMessage(sender, {
+              text: 'Anti View Once is not enabled for this bot. Turn it on in your dashboard settings, then .v will work here.',
+            });
           }
           continue; // .v / .vlist never fall through to normal command processing
         }
