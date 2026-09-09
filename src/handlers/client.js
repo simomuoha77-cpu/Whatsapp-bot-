@@ -385,6 +385,7 @@ function createClientRoutes() {
 
     res.send(layout('Dashboard', `
       <h2>Your Bot</h2>
+      <p style="color:#888;font-size:0.85em;">Bot ID: ${botId} (compare this against the botId shown in any .v debug reply from WhatsApp — if they don't match, that's the bug)</p>
       ${disconnectBanner}
       <div class="card">
         <p><span class="pill ${active ? 'on' : 'off'}">${active ? 'ACTIVE' : 'EXPIRED'}</span></p>

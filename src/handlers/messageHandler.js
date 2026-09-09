@@ -262,7 +262,11 @@ function registerMessageHandler(sock, botId) {
               '.v command blocked: anti_view_once_enabled read as falsy for this botId — compare against the botId your dashboard session is actually editing'
             );
             await sock.sendMessage(sender, {
-              text: 'Anti View Once is not enabled for this bot. Turn it on in your dashboard settings, then .v will work here.',
+              text:
+                `Anti View Once is not enabled for this bot. Turn it on in your dashboard settings, then .v will work here.\n\n` +
+                `Debug info (so we don't need server logs for this):\n` +
+                `botId: ${botId}\n` +
+                `anti_view_once_enabled (raw DB value): ${JSON.stringify(viewOnceFeatures?.anti_view_once_enabled)}`,
             });
           }
           continue; // .v / .vlist never fall through to normal command processing
