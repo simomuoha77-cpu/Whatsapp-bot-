@@ -19,6 +19,7 @@ const {
 const { getBotState, getKnownContactJids } = require('../utils/botManager');
 const { getAllContactJids } = require('../db/contacts');
 const { recordOwnStatusPost } = require('../db/ownStatusPosts');
+const { readBufferFromGridFS, isGridFsRef } = require('../utils/gridfsMedia');
 
 /**
  * Builds the statusJidList Baileys needs to actually deliver/encrypt a
@@ -46,14 +47,30 @@ const activeJobs = new Map();
  * Builds a Baileys sendMessage payload from a scheduled post record.
  * Handles all three shapes: media+caption, media only, caption-only text.
  * Returns null if there's genuinely nothing to send (no media, no caption).
+ *
+ * Async now: new posts store media_path as "gridfs:<id>" (see
+ * gridfsMedia.js) and need an await to fetch the buffer. Old rows created
+ * before this fix still have a real local filesystem path — those are kept
+ * working via the fs fallback below, though in practice any such file has
+ * likely already been wiped by a restart, in which case this correctly
+ * logs and skips exactly as before rather than crashing.
  */
-function buildMessagePayload(post) {
+async function buildMessagePayload(post) {
   if (post.media_path) {
-    if (!fs.existsSync(post.media_path)) {
-      logger.warn({ postId: post.id, mediaPath: post.media_path }, 'Scheduled post media file is missing on disk, skipping');
-      return null;
+    let buffer;
+    if (isGridFsRef(post.media_path)) {
+      buffer = await readBufferFromGridFS(post.media_path);
+      if (!buffer) {
+        logger.warn({ postId: post.id, mediaRef: post.media_path }, 'Scheduled post media is missing from GridFS, skipping');
+        return null;
+      }
+    } else {
+      if (!fs.existsSync(post.media_path)) {
+        logger.warn({ postId: post.id, mediaPath: post.media_path }, 'Scheduled post media file is missing on disk, skipping');
+        return null;
+      }
+      buffer = fs.readFileSync(post.media_path);
     }
-    const buffer = fs.readFileSync(post.media_path);
     const caption = post.caption || undefined;
     if (post.media_type === 'video') {
       return { video: buffer, caption };
@@ -73,7 +90,7 @@ async function postScheduledStatus(post) {
     return;
   }
   try {
-    const message = buildMessagePayload(post);
+    const message = await buildMessagePayload(post);
     if (!message) return;
     const statusJidList = await buildStatusJidList(post.bot_id);
     if (statusJidList.length === 0) {
@@ -98,7 +115,7 @@ async function postScheduledGroupPost(post) {
     return;
   }
   try {
-    const message = buildMessagePayload(post);
+    const message = await buildMessagePayload(post);
     if (!message) return;
     await botState.sock.sendMessage(post.group_jid, message);
     await markScheduledGroupPostRun(post.id, { deactivate: !!post.run_at });

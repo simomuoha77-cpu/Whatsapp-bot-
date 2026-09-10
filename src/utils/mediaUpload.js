@@ -1,12 +1,4 @@
-const fs = require('fs');
-const path = require('path');
 const multer = require('multer');
-
-// Shared home for any media a client uploads to attach to a scheduled post
-// (status or group). Kept separate from downloads/status-saves (that's for
-// media the bot *captures* from other people's statuses, not what it posts).
-const SCHEDULED_MEDIA_ROOT = path.join(__dirname, '..', '..', 'downloads', 'scheduled-media');
-if (!fs.existsSync(SCHEDULED_MEDIA_ROOT)) fs.mkdirSync(SCHEDULED_MEDIA_ROOT, { recursive: true });
 
 const ALLOWED_MIME_TO_TYPE = {
   'image/jpeg': 'image',
@@ -21,23 +13,18 @@ const ALLOWED_MIME_TO_TYPE = {
   'video/webm': 'video',
 };
 
-function sanitizeFilenamePart(s) {
-  return (s || 'file').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, SCHEDULED_MEDIA_ROOT),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || '') || (file.mimetype === 'video/mp4' ? '.mp4' : '.jpg');
-    cb(null, `${Date.now()}_${sanitizeFilenamePart(path.basename(file.originalname || 'upload', ext))}${ext}`);
-  },
-});
+// Memory storage, not disk: req.file.buffer goes straight to GridFS (see
+// gridfsMedia.js) instead of local disk, which doesn't survive Render
+// redeploys or free-tier spin-downs — that mismatch was why recurring
+// image/video posts silently stopped firing after the first day while the
+// upload itself appeared to work fine.
+const storage = multer.memoryStorage();
 
 // Single optional 'media' field — routes that don't send a file just get
 // req.file === undefined and fall back to text-only, same as before.
 const scheduledMediaUpload = multer({
   storage,
-  limits: { fileSize: 64 * 1024 * 1024 }, // 64MB — generous for a WhatsApp status/group image or short video
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB — GridFS itself has no size limit (it chunks automatically), but multer.memoryStorage() holds the whole upload in the Node process's RAM before it's streamed to GridFS. Given this same instance is already resource-constrained enough to cause connection drops (see botManager.js), capping this bounds worst-case memory pressure during an upload; raise it if the instance has headroom.
   fileFilter: (req, file, cb) => {
     if (ALLOWED_MIME_TO_TYPE[file.mimetype]) return cb(null, true);
     cb(new Error(`Unsupported file type "${file.mimetype}". Use JPEG/PNG/WEBP images or MP4 video.`));
@@ -57,4 +44,4 @@ function mediaTypeForFile(file) {
   return ALLOWED_MIME_TO_TYPE[file.mimetype] || null;
 }
 
-module.exports = { handleScheduledMediaUpload, mediaTypeForFile, SCHEDULED_MEDIA_ROOT };
+module.exports = { handleScheduledMediaUpload, mediaTypeForFile };

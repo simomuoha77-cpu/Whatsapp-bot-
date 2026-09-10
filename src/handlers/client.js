@@ -36,6 +36,7 @@ const {
   updateScheduledGroupPostCaption,
 } = require('../db/scheduledGroupPosts');
 const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
+const { saveBufferToGridFS } = require('../utils/gridfsMedia');
 const { resolveSchedule } = require('../utils/scheduleTime');
 const { refreshScheduler, buildStatusJidList } = require('./scheduler');
 const { getProductsForBot, addProduct, deleteProduct } = require('../db/products');
@@ -799,13 +800,19 @@ function createClientRoutes() {
       if (error) {
         return res.redirect(`/client/dashboard?postError=${encodeURIComponent(error)}`);
       }
+      // Saved to GridFS (in MongoDB), not local disk — local disk doesn't
+      // survive this instance's redeploys or free-tier spin-downs, which
+      // was why recurring media posts stopped firing after the first day.
+      const mediaPath = req.file
+        ? await saveBufferToGridFS(req.file.buffer, req.file.originalname, req.file.mimetype)
+        : null;
       await createScheduledStatusPost({
         botId,
         cronExpression,
         runAt,
         timezone,
         caption: caption || null,
-        mediaPath: req.file ? req.file.path : null,
+        mediaPath,
         mediaType: mediaTypeForFile(req.file),
       });
       await refreshScheduler();
@@ -858,6 +865,12 @@ function createClientRoutes() {
       }
 
       const live = getBotState(botId);
+      // Same GridFS fix as the status-post route above — upload once per
+      // request, reuse the same reference for every selected group so a
+      // multi-group post doesn't re-read the buffer per group.
+      const mediaPath = req.file
+        ? await saveBufferToGridFS(req.file.buffer, req.file.originalname, req.file.mimetype)
+        : null;
       for (const groupJid of groupJids) {
         let groupName = null;
         if (live && live.sock && live.status === 'connected') {
@@ -872,7 +885,7 @@ function createClientRoutes() {
           runAt,
           timezone,
           caption: caption || null,
-          mediaPath: req.file ? req.file.path : null,
+          mediaPath,
           mediaType: mediaTypeForFile(req.file),
         });
       }
