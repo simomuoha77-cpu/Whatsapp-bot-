@@ -354,7 +354,15 @@ function registerStatusHandler(sock, botId) {
       // OTHER people's statuses. Without this check, every status the bot
       // posts (manual or scheduled) gets "viewed" and "reacted to" by
       // itself, which is exactly the "reacting to my own status" bug.
+      //
+      // msg.key.fromMe alone isn't reliable here: for status@broadcast,
+      // Baileys sometimes delivers the bot's own post back through
+      // messages.upsert via a history-sync/multi-device path where fromMe
+      // comes through false even though the participant is unmistakably
+      // this bot's own account. Belt-and-suspenders: also check the
+      // participant identity directly against every known self-JID.
       if (msg.key.fromMe) continue;
+      if (isOwnJid(sock, msg.key.participant)) continue;
 
       // Skip if we've already handled this exact status update for this bot.
       if (alreadyProcessed(botId, msg.key.id)) continue;
