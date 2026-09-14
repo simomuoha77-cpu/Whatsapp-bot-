@@ -239,20 +239,24 @@ async function reactToStatus(sock, msg, stealthMode) {
   const resolvedParticipant = await resolveToPhoneJid(sock, participant);
   const preferredParticipant = participantAlt || resolvedParticipant || participant;
 
-  // Hard evidence from production logs: WhatsApp's own servers reject
-  // Baileys' assertSessions() call with "not-acceptable" (a protocol-level
-  // rejection, not a silent no-op) when asked to establish an encryption
-  // session for a raw, unmapped @lid identifier. This isn't a display bug
-  // to work around — it's WhatsApp itself refusing the request. Sending
-  // ANY message (reaction or otherwise) addressed to an unresolved @lid
-  // will always fail this way on this Baileys version. Skip cleanly
-  // instead of letting it crash the queue task every time.
-  if (preferredParticipant.endsWith('@lid')) {
-    logger.warn(
+  // Previously this hard-skipped any status whose owner couldn't be resolved
+  // off @lid to a phone-number JID, on the theory that WhatsApp always
+  // rejects session queries for unmapped @lid identifiers. In practice that
+  // theory over-fired: as WhatsApp's LID rollout has widened, most contacts
+  // now show up as @lid with no participantAlt/participantPn at all and no
+  // pre-existing signalRepository mapping — meaning nearly every status hit
+  // this skip and NO reaction ever went out, not just the occasional edge
+  // case. Status reactions are addressed via statusJidList (a different
+  // send path from 1:1 messaging), and that path tolerates a raw @lid fine
+  // in current testing. So: try the send with whatever identifier we have,
+  // rather than refusing up front. The queue's own try/catch already logs
+  // and moves on if a specific send is genuinely rejected.
+  const stillUnresolvedLid = preferredParticipant.endsWith('@lid');
+  if (stillUnresolvedLid) {
+    logger.info(
       { participant, participantAlt, resolvedParticipant, preferredParticipant },
-      'Status owner has no resolvable phone-number JID (still @lid after resolution) — skipping reaction, WhatsApp rejects session queries for unmapped @lid identifiers'
+      'Status owner still @lid after resolution — attempting reaction anyway (statusJidList path)'
     );
-    return { emoji, skipped: true, reason: 'unresolved_lid', participant, participantAlt, resolvedParticipant, preferredParticipant };
   }
 
   // Safety guard: never react to our own status even if participant
