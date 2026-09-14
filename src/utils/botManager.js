@@ -211,13 +211,29 @@ async function startBotSocket(botId, slug, onReady) {
 
         if (features.always_online_enabled) {
           await sock.sendPresenceUpdate('available');
+          // WhatsApp lapses presence back to "offline/last seen" after roughly
+          // 30-60s of no keepalive — a 4-minute refresh left long gaps where
+          // the account showed offline. Refreshing every 20s keeps it pinned
+          // to "online" continuously with margin to spare.
           entry.presenceIntervalId = setInterval(async () => {
             try {
               await sock.sendPresenceUpdate('available');
             } catch (err) {
               logger.warn({ err, botId }, 'Always Online: failed to refresh presence');
             }
-          }, 4 * 60 * 1000); // refresh every 4 minutes
+          }, 20 * 1000); // refresh every 20 seconds
+
+          // Also re-assert "available" around every inbound message, since a
+          // burst of chat/message events can coincide with the exact moment
+          // presence would otherwise lapse.
+          entry.alwaysOnlineMsgListener = async () => {
+            try {
+              await sock.sendPresenceUpdate('available');
+            } catch (err) {
+              // non-fatal, next interval tick will retry
+            }
+          };
+          sock.ev.on('messages.upsert', entry.alwaysOnlineMsgListener);
         }
 
         if (features.auto_bio_enabled && features.auto_bio_texts) {
@@ -249,6 +265,10 @@ async function startBotSocket(botId, slug, onReady) {
       if (entry.presenceIntervalId) {
         clearInterval(entry.presenceIntervalId);
         entry.presenceIntervalId = null;
+      }
+      if (entry.alwaysOnlineMsgListener) {
+        sock.ev.off('messages.upsert', entry.alwaysOnlineMsgListener);
+        entry.alwaysOnlineMsgListener = null;
       }
       if (entry.bioIntervalId) {
         clearInterval(entry.bioIntervalId);
