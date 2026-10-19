@@ -34,8 +34,14 @@ function createServer() {
   app.use('/connect', createOnboardingRoutes());
   app.use('/client', createClientRoutes());
 
+  // The public homepage should take users straight to their client dashboard.
+  // Logged-in clients go directly to the dashboard; visitors are sent to login.
+  // The dashboard's existing auth middleware handles expired or invalid sessions.
   app.get('/', (req, res) => {
-    res.send('Multi-tenant WhatsApp bot platform. Visit /admin to manage clients, or /client/register to sign up for a bot.');
+    if (req.session && req.session.clientBotId) {
+      return res.redirect('/client/dashboard');
+    }
+    return res.redirect('/client/login');
   });
 
   app.get('/health', (req, res) => {
