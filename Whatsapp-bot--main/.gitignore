@@ -1,0 +1,8 @@
+node_modules/
+.env
+downloads/
+*.log
+npm-debug.log*
+.DS_Store
+*.zip
+whatsapp-saas/
