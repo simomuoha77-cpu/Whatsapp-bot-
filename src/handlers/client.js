@@ -195,8 +195,60 @@ function layout(title, body, extraHead = '') {
 // it's flipped — no separate "Toggle" button needed, feels like a real
 // settings screen instead of a form you have to remember to submit.
 const TOGGLE_AUTOSUBMIT_JS = `<script>
-  document.querySelectorAll('.switch input').forEach(function(el) {
-    el.addEventListener('change', function() { el.closest('form').submit(); });
+  // Feature switches save in the background. Do not submit the form normally,
+  // because a page navigation/reload interrupts the dashboard experience.
+  document.querySelectorAll('.switch input[name="enabled"]').forEach(function(el) {
+    el.addEventListener('change', async function() {
+      const input = this;
+      const form = input.closest('form');
+      if (!form) return;
+      if (!/\/settings\/toggle(?:$|\?)/.test(form.action)) {
+        form.submit();
+        return;
+      }
+      if (input.dataset.saving === '1') return;
+
+      const previousValue = !input.checked;
+      input.dataset.saving = '1';
+      input.disabled = true;
+      input.setAttribute('aria-busy', 'true');
+
+      try {
+        const body = new URLSearchParams();
+        const feature = form.querySelector('input[name="feature"]');
+        if (!feature) throw new Error('Missing feature name');
+        body.set('feature', feature.value);
+        body.set('enabled', input.checked ? '1' : '0');
+
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+          },
+          body: body.toString(),
+          credentials: 'same-origin'
+        });
+        if (!response.ok) throw new Error('Could not save setting');
+        const result = await response.json();
+        if (!result || result.ok !== true) throw new Error('Could not save setting');
+      } catch (err) {
+        input.checked = previousValue;
+        let status = form.querySelector('.toggle-save-status');
+        if (!status) {
+          status = document.createElement('small');
+          status.className = 'toggle-save-status';
+          status.style.cssText = 'display:block;color:#f87171;margin-top:4px';
+          form.closest('.row').appendChild(status);
+        }
+        status.textContent = 'Could not save. Check your connection and try again.';
+      } finally {
+        input.disabled = false;
+        input.removeAttribute('aria-busy');
+        delete input.dataset.saving;
+      }
+    });
   });
 </script>`;
 
@@ -939,12 +991,22 @@ function createClientRoutes() {
   router.post('/settings/toggle', async (req, res) => {
     const botId = req.session.clientBotId;
     const feature = req.body.feature;
-    if (FEATURE_COLUMNS.includes(feature)) {
-      // A real checkbox only submits its field when checked — unchecked
-      // simply omits "enabled" from the form body. So presence = on.
-      await setFeature(botId, feature, req.body.enabled === '1');
+    if (!FEATURE_COLUMNS.includes(feature)) {
+      if (req.get('X-Requested-With') === 'XMLHttpRequest') {
+        return res.status(400).json({ ok: false, error: 'Invalid feature' });
+      }
+      return res.redirect('/client/dashboard');
     }
-    res.redirect('/client/dashboard');
+
+    const enabled = req.body.enabled === '1';
+    await setFeature(botId, feature, enabled);
+
+    // AJAX toggle requests receive JSON so the dashboard stays on the same
+    // page and the browser address bar never navigates to the POST endpoint.
+    if (req.get('X-Requested-With') === 'XMLHttpRequest') {
+      return res.json({ ok: true, feature, enabled });
+    }
+    return res.redirect('/client/dashboard');
   });
 
   router.post('/settings/stealth-mode', async (req, res) => {
