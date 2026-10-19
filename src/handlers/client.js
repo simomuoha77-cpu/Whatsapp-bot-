@@ -756,6 +756,33 @@ function createClientRoutes() {
       </div>
 
       <div class="card">
+        <h3>👥 Target Groups — Add/Invite Users</h3>
+        <p><small>Select your target group(s), then enter phone numbers for people who have agreed to join. Use international format, one number per line or separated by commas. The bot must be a group admin. WhatsApp privacy settings may prevent direct addition; this feature does not bypass WhatsApp restrictions.</small></p>
+        ${req.query.groupMembersError ? `<p style="color:#f87171;">${req.query.groupMembersError}</p>` : ''}
+        ${req.query.groupMembersSuccess ? `<p style="color:#4ade80;">${req.query.groupMembersSuccess}</p>` : ''}
+        ${botGroups.length > 0 ? `
+          <form method="POST" action="/client/settings/group-members">
+            <label><small>Choose target group(s)</small></label>
+            <div class="group-checklist">
+              ${botGroups.map((g) => `
+                <label class="group-check-row">
+                  <input type="checkbox" name="groupId" value="${g.id}" />
+                  <span>${g.subject}</span>
+                </label>
+              `).join('')}
+            </div>
+            <label><small>Users to add/invite</small></label>
+            <textarea name="phones" rows="5" placeholder="254712345678&#10;254701234567" required style="width:100%;box-sizing:border-box;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--card-border);border-radius:8px;margin:8px 0;"></textarea>
+            <label style="display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:14px;">
+              <input type="checkbox" name="consent" value="yes" required style="width:auto;margin-top:4px;" />
+              <span>I confirm these people have agreed to join the selected group(s).</span>
+            </label>
+            <button type="submit">Process Selected Users</button>
+          </form>
+        ` : '<p>Connect your bot and add it to at least one group to use this feature.</p>'}
+      </div>
+
+      <div class="card">
         <h3>👀 Status Views</h3>
         <p><small>Post a status from here, or wait for your scheduled posts — either way, viewers show up below once they open it. Only tracked while your bot is connected and only counts views that happen after posting.</small></p>
         <form method="POST" action="/client/settings/post-status">
@@ -805,6 +832,64 @@ function createClientRoutes() {
       return res.redirect(`/client/dashboard?nameError=${encodeURIComponent(message)}`);
     }
     res.redirect('/client/dashboard?nameSuccess=1');
+  });
+
+  router.post('/settings/group-members', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const groupIds = [...new Set([].concat(req.body.groupId || []).map((v) => String(v).trim()).filter(Boolean))];
+    const phonesRaw = String(req.body.phones || '');
+    const digitsList = [...new Set(phonesRaw.split(/[\s,;]+/).map((v) => v.replace(/[^0-9]/g, '')).filter((v) => v.length >= 8 && v.length <= 15))];
+    const redirect = (kind, message) => res.redirect(`/client/dashboard?${kind}=` + encodeURIComponent(message));
+
+    const live = getBotState(botId);
+    if (!live || !live.sock || live.status !== 'connected') {
+      return redirect('groupMembersError', 'Your bot is not connected right now.');
+    }
+    if (req.body.consent !== 'yes') {
+      return redirect('groupMembersError', 'Confirm that all selected people agreed to join before processing.');
+    }
+    if (!groupIds.length || !digitsList.length) {
+      return redirect('groupMembersError', 'Select at least one group and enter valid phone numbers.');
+    }
+    if (digitsList.length > 50 || groupIds.length > 10 || digitsList.length * groupIds.length > 100) {
+      return redirect('groupMembersError', 'Limit per run: 50 phone numbers, 10 groups, and 100 user/group actions. Split the list into smaller batches.');
+    }
+
+    try {
+      const participating = await live.sock.groupFetchAllParticipating();
+      const validGroupIds = new Set(Object.keys(participating || {}));
+      if (groupIds.some((id) => !validGroupIds.has(id))) {
+        return redirect('groupMembersError', 'One or more selected groups are no longer available. Refresh the dashboard and select them again.');
+      }
+
+      let added = 0;
+      let privacyBlocked = 0;
+      let failed = 0;
+      for (const groupId of groupIds) {
+        for (const digits of digitsList) {
+          const targetJid = `${digits}@s.whatsapp.net`;
+          try {
+            const result = await live.sock.groupParticipantsUpdate(groupId, [targetJid], 'add');
+            const code = String(result?.[0]?.status || '');
+            if (code === '200') added += 1;
+            else if (code === '403') privacyBlocked += 1;
+            else {
+              failed += 1;
+              logger.warn({ botId, groupId, targetJid, status: code }, 'Group add returned non-success status');
+            }
+          } catch (err) {
+            failed += 1;
+            logger.warn({ err, botId, groupId, targetJid }, 'Failed to add opted-in group member');
+          }
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        }
+      }
+      const summary = `Finished: ${added} added, ${privacyBlocked} blocked by WhatsApp privacy settings (not confirmed joined), ${failed} failed. Users blocked by privacy may need an invite link.`;
+      return redirect(failed ? 'groupMembersError' : 'groupMembersSuccess', summary);
+    } catch (err) {
+      logger.warn({ err, botId, groupIds }, 'Bulk group member processing failed');
+      return redirect('groupMembersError', 'Could not process the selected users. Confirm the bot is a group admin and try again.');
+    }
   });
 
   router.post('/settings/post-status', async (req, res) => {
