@@ -195,60 +195,8 @@ function layout(title, body, extraHead = '') {
 // it's flipped — no separate "Toggle" button needed, feels like a real
 // settings screen instead of a form you have to remember to submit.
 const TOGGLE_AUTOSUBMIT_JS = `<script>
-  // Feature switches save in the background. Do not submit the form normally,
-  // because a page navigation/reload interrupts the dashboard experience.
-  document.querySelectorAll('.switch input[name="enabled"]').forEach(function(el) {
-    el.addEventListener('change', async function() {
-      const input = this;
-      const form = input.closest('form');
-      if (!form) return;
-      if (!/\/settings\/toggle(?:$|\?)/.test(form.action)) {
-        form.submit();
-        return;
-      }
-      if (input.dataset.saving === '1') return;
-
-      const previousValue = !input.checked;
-      input.dataset.saving = '1';
-      input.disabled = true;
-      input.setAttribute('aria-busy', 'true');
-
-      try {
-        const body = new URLSearchParams();
-        const feature = form.querySelector('input[name="feature"]');
-        if (!feature) throw new Error('Missing feature name');
-        body.set('feature', feature.value);
-        body.set('enabled', input.checked ? '1' : '0');
-
-        const response = await fetch(form.action, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Accept': 'application/json'
-          },
-          body: body.toString(),
-          credentials: 'same-origin'
-        });
-        if (!response.ok) throw new Error('Could not save setting');
-        const result = await response.json();
-        if (!result || result.ok !== true) throw new Error('Could not save setting');
-      } catch (err) {
-        input.checked = previousValue;
-        let status = form.querySelector('.toggle-save-status');
-        if (!status) {
-          status = document.createElement('small');
-          status.className = 'toggle-save-status';
-          status.style.cssText = 'display:block;color:#f87171;margin-top:4px';
-          form.closest('.row').appendChild(status);
-        }
-        status.textContent = 'Could not save. Check your connection and try again.';
-      } finally {
-        input.disabled = false;
-        input.removeAttribute('aria-busy');
-        delete input.dataset.saving;
-      }
-    });
+  document.querySelectorAll('.switch input').forEach(function(el) {
+    el.addEventListener('change', function() { el.closest('form').submit(); });
   });
 </script>`;
 
@@ -345,6 +293,118 @@ function createClientRoutes() {
 
   router.use(requireClientAuth);
 
+  // Consent-based group-to-group invitation workflow. Participant details stay
+  // server-side; the browser receives counts and opaque participant indexes only.
+  const groupInviteJobs = new Map();
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  router.get('/group-invites', async (req, res) => {
+    res.send(layout('Group Member Invitations', `
+      <h1>Group Member Invitations</h1>
+      <p>Select a source group and a destination group. Participants are only messaged when you confirm they have agreed to receive this invitation. WhatsApp privacy restrictions are respected.</p>
+      <div class="card">
+        <label><small>Source group</small><select id="sourceGroup"><option value="">Loading groups…</option></select></label>
+        <label><small>Destination group</small><select id="destinationGroup"><option value="">Select destination group</option></select></label>
+        <button type="button" id="previewBtn" class="secondary">Preview eligible members</button>
+        <div id="preview" aria-live="polite"></div>
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input id="consentConfirm" type="checkbox" style="width:auto;margin-top:4px"/><span>I confirm these selected source-group members have agreed to receive an invitation to the destination group.</span></label>
+        <button type="button" id="startBtn" disabled>Send group invitations</button>
+        <div id="jobStatus" aria-live="polite"></div>
+      </div>
+      <p><a href="/client/dashboard">← Back to dashboard</a></p>
+      <script>
+      (function(){
+        const source=document.getElementById('sourceGroup'), dest=document.getElementById('destinationGroup');
+        const preview=document.getElementById('preview'), consent=document.getElementById('consentConfirm'), start=document.getElementById('startBtn'), status=document.getElementById('jobStatus');
+        let previewData=null, poll=null;
+        async function api(url, opts){const r=await fetch(url,Object.assign({credentials:'same-origin',headers:{'Accept':'application/json'}},opts||{}));const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||'Request failed');return j;}
+        async function loadGroups(){try{const d=await api('/client/api/group-invites/groups');source.innerHTML='<option value="">Select source group</option>';dest.innerHTML='<option value="">Select destination group</option>';d.groups.forEach(g=>{const label=g.subject+' ('+g.participantCount+' members)';[source,dest].forEach(sel=>{const o=document.createElement('option');o.value=g.id;o.textContent=label;sel.appendChild(o);});});}catch(e){source.innerHTML='<option value="">'+e.message+'</option>';}}
+        function updateStart(){start.disabled=!(previewData&&consent.checked&&previewData.eligible>0&&source.value!==dest.value);}
+        source.addEventListener('change',()=>{previewData=null;preview.textContent='';updateStart();});dest.addEventListener('change',()=>{previewData=null;preview.textContent='';updateStart();});consent.addEventListener('change',updateStart);
+        document.getElementById('previewBtn').addEventListener('click',async()=>{preview.textContent='Checking groups…';previewData=null;updateStart();try{if(!source.value||!dest.value||source.value===dest.value)throw new Error('Choose two different groups.');previewData=await api('/client/api/group-invites/preview',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value})});preview.textContent='Source members: '+previewData.sourceCount+' · Already in destination: '+previewData.alreadyInDestination+' · Available to invite: '+previewData.eligible+' . Only send invitations to people who agreed to receive them.';updateStart();}catch(e){preview.textContent=e.message;}});
+        start.addEventListener('click',async()=>{start.disabled=true;status.textContent='Starting background job…';try{const j=await api('/client/api/group-invites/start',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value,consentConfirmed:consent.checked})});status.textContent='Job queued.';if(poll)clearInterval(poll);poll=setInterval(async()=>{try{const x=await api('/client/api/group-invites/status/'+encodeURIComponent(j.jobId));status.textContent='Status: '+x.job.status+' · Processed: '+x.job.processed+'/'+x.job.total+' · Invitations sent: '+x.job.sent+' · Failed: '+x.job.failed;if(['completed','failed'].includes(x.job.status)){clearInterval(poll);poll=null;}}catch(e){status.textContent=e.message;}},2000);}catch(e){status.textContent=e.message;updateStart();}});
+        loadGroups();
+      })();
+      </script>
+    `));
+  });
+
+  router.get('/api/group-invites/groups', async (req, res) => {
+    try {
+      const botId = req.session.clientBotId;
+      const live = getBotState(botId);
+      if (!live || !live.sock || live.status !== 'connected') return res.status(409).json({ok:false,error:'Connect your WhatsApp bot first.'});
+      const all = await live.sock.groupFetchAllParticipating();
+      const groups = Object.values(all).map(g => ({id:g.id,subject:g.subject||'Unnamed group',participantCount:Array.isArray(g.participants)?g.participants.length:0}));
+      return res.json({ok:true,groups});
+    } catch (err) { logger.warn({err},'Failed to load groups for group invitations'); return res.status(500).json({ok:false,error:'Could not load WhatsApp groups.'}); }
+  });
+
+  router.post('/api/group-invites/preview', express.json(), async (req, res) => {
+    try {
+      const botId = req.session.clientBotId, live = getBotState(botId);
+      const sourceId=String(req.body.sourceGroup||''), destinationId=String(req.body.destinationGroup||'');
+      if (!live || !live.sock || live.status !== 'connected') return res.status(409).json({ok:false,error:'Connect your WhatsApp bot first.'});
+      if (!sourceId || !destinationId || sourceId===destinationId || !sourceId.endsWith('@g.us') || !destinationId.endsWith('@g.us')) return res.status(400).json({ok:false,error:'Choose two different valid groups.'});
+      const all=await live.sock.groupFetchAllParticipating(), source=all[sourceId], destination=all[destinationId];
+      if (!source || !destination) return res.status(403).json({ok:false,error:'Both groups must be accessible to your connected bot.'});
+      const destSet=new Set((destination.participants||[]).map(p=>p.id));
+      const eligible=(source.participants||[]).filter(p=>p.id && !destSet.has(p.id) && !p.id.endsWith('@lid'));
+      return res.json({ok:true,sourceCount:(source.participants||[]).length,alreadyInDestination:(source.participants||[]).filter(p=>destSet.has(p.id)).length,eligible:eligible.length});
+    } catch(err) { logger.warn({err},'Group invitation preview failed'); return res.status(500).json({ok:false,error:'Could not preview participants.'}); }
+  });
+
+  router.post('/api/group-invites/start', express.json(), async (req, res) => {
+    try {
+      const botId=req.session.clientBotId, live=getBotState(botId);
+      const sourceId=String(req.body.sourceGroup||''), destinationId=String(req.body.destinationGroup||'');
+      if (!req.body.consentConfirmed) return res.status(400).json({ok:false,error:'Confirm that the selected members agreed to receive invitations.'});
+      if (!live || !live.sock || live.status!=='connected') return res.status(409).json({ok:false,error:'Connect your WhatsApp bot first.'});
+      if (!sourceId || !destinationId || sourceId===destinationId) return res.status(400).json({ok:false,error:'Choose two different groups.'});
+      const all=await live.sock.groupFetchAllParticipating(), source=all[sourceId], destination=all[destinationId];
+      if (!source || !destination) return res.status(403).json({ok:false,error:'Both groups must be accessible to your connected bot.'});
+      const metadata=await live.sock.groupMetadata(destinationId);
+      const inviteCode=await live.sock.groupInviteCode(destinationId);
+      if (!inviteCode) return res.status(400).json({ok:false,error:'WhatsApp did not provide an invite link for the destination group.'});
+      const destSet=new Set((destination.participants||[]).map(p=>p.id));
+      const targets=(source.participants||[]).map(p=>p.id).filter(id=>id && !destSet.has(id) && !id.endsWith('@lid') && /@s\.whatsapp\.net$/.test(id));
+      const jobId=crypto.randomUUID();
+      const job={jobId,botId,sourceId,destinationId,destinationName:metadata.subject||'the group',inviteLink:'https://chat.whatsapp.com/'+inviteCode,targets,processed:0,sent:0,failed:0,total:targets.length,status:'queued',createdAt:new Date().toISOString()};
+      groupInviteJobs.set(jobId,job);
+      const db = await getDb();
+      await db.collection('groupInviteJobs').insertOne({...job, _id: jobId, targets: [...targets]});
+      res.json({ok:true,jobId});
+      setImmediate(async()=>{
+        job.status='running';
+        const db = await getDb();
+        await db.collection('groupInviteJobs').updateOne({_id:jobId,botId},{ $set:{status:'running'} });
+        for (const jid of job.targets) {
+          const current=getBotState(botId);
+          if (!current || !current.sock || current.status!=='connected') { job.failed += job.total-job.processed; job.status='failed'; break; }
+          try {
+            // Only send explicit invitations after the owner confirms consent.
+            await current.sock.sendMessage(jid,{text:'Hello! You are invited to join '+job.destinationName+'.\n\nJoin using this link:\n'+job.inviteLink+'\n\nYou are welcome to join if interested.'});
+            job.sent++;
+          } catch(err) { job.failed++; logger.warn({err,botId,jobId},'Group invitation delivery failed'); }
+          job.processed++;
+          await db.collection('groupInviteJobs').updateOne({_id:jobId,botId},{ $set:{processed:job.processed,sent:job.sent,failed:job.failed,status:job.status} });
+          await sleep(1200); // conservative sequential pacing; never parallel blast
+        }
+        if(job.status!=='failed') job.status='completed';
+        job.targets=undefined; // discard participant list when processing ends
+        await db.collection('groupInviteJobs').updateOne({_id:jobId,botId},{ $set:{status:job.status,processed:job.processed,sent:job.sent,failed:job.failed,finishedAt:new Date().toISOString()}, $unset:{targets:''} });
+      });
+    } catch(err) { logger.warn({err},'Failed to start group invitation job'); if(!res.headersSent) return res.status(500).json({ok:false,error:'Could not start invitation job.'}); }
+  });
+
+  router.get('/api/group-invites/status/:jobId', (req,res) => {
+    (async()=>{
+      const job=groupInviteJobs.get(req.params.jobId);
+      if(job && job.botId===req.session.clientBotId) return res.json({ok:true,job:{jobId:job.jobId,status:job.status,processed:job.processed,sent:job.sent,failed:job.failed,total:job.total}});
+      try { const db=await getDb(); const saved=await db.collection('groupInviteJobs').findOne({_id:req.params.jobId,botId:req.session.clientBotId},{projection:{_id:1,status:1,processed:1,sent:1,failed:1,total:1}}); if(!saved) return res.status(404).json({ok:false,error:'Invitation job not found.'}); return res.json({ok:true,job:{jobId:saved._id,status:saved.status,processed:saved.processed,sent:saved.sent,failed:saved.failed,total:saved.total}}); } catch(err) { return res.status(500).json({ok:false,error:'Could not read job status.'}); }
+    })();
+  });
+
   router.get('/dashboard', async (req, res) => {
     const botId = req.session.clientBotId;
     const bot = await getBotById(botId);
@@ -438,6 +498,7 @@ function createClientRoutes() {
 
     res.send(layout('Dashboard', `
       <h2>Your Bot</h2>
+      <div class="card"><h3>Group Member Invitations</h3><p>Choose a source group and destination group to invite members who have agreed to receive an invitation.</p><a href="/client/group-invites"><button type="button">Open Group Invitations</button></a></div>
       <p style="color:#888;font-size:0.85em;">Bot ID: ${botId} (compare this against the botId shown in any .v debug reply from WhatsApp — if they don't match, that's the bug)</p>
       ${disconnectBanner}
       <div class="card">
@@ -756,33 +817,6 @@ function createClientRoutes() {
       </div>
 
       <div class="card">
-        <h3>👥 Target Groups — Add/Invite Users</h3>
-        <p><small>Select your target group(s), then enter phone numbers for people who have agreed to join. Use international format, one number per line or separated by commas. The bot must be a group admin. WhatsApp privacy settings may prevent direct addition; this feature does not bypass WhatsApp restrictions.</small></p>
-        ${req.query.groupMembersError ? `<p style="color:#f87171;">${req.query.groupMembersError}</p>` : ''}
-        ${req.query.groupMembersSuccess ? `<p style="color:#4ade80;">${req.query.groupMembersSuccess}</p>` : ''}
-        ${botGroups.length > 0 ? `
-          <form method="POST" action="/client/settings/group-members">
-            <label><small>Choose target group(s)</small></label>
-            <div class="group-checklist">
-              ${botGroups.map((g) => `
-                <label class="group-check-row">
-                  <input type="checkbox" name="groupId" value="${g.id}" />
-                  <span>${g.subject}</span>
-                </label>
-              `).join('')}
-            </div>
-            <label><small>Users to add/invite</small></label>
-            <textarea name="phones" rows="5" placeholder="254712345678&#10;254701234567" required style="width:100%;box-sizing:border-box;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--card-border);border-radius:8px;margin:8px 0;"></textarea>
-            <label style="display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:14px;">
-              <input type="checkbox" name="consent" value="yes" required style="width:auto;margin-top:4px;" />
-              <span>I confirm these people have agreed to join the selected group(s).</span>
-            </label>
-            <button type="submit">Process Selected Users</button>
-          </form>
-        ` : '<p>Connect your bot and add it to at least one group to use this feature.</p>'}
-      </div>
-
-      <div class="card">
         <h3>👀 Status Views</h3>
         <p><small>Post a status from here, or wait for your scheduled posts — either way, viewers show up below once they open it. Only tracked while your bot is connected and only counts views that happen after posting.</small></p>
         <form method="POST" action="/client/settings/post-status">
@@ -832,64 +866,6 @@ function createClientRoutes() {
       return res.redirect(`/client/dashboard?nameError=${encodeURIComponent(message)}`);
     }
     res.redirect('/client/dashboard?nameSuccess=1');
-  });
-
-  router.post('/settings/group-members', async (req, res) => {
-    const botId = req.session.clientBotId;
-    const groupIds = [...new Set([].concat(req.body.groupId || []).map((v) => String(v).trim()).filter(Boolean))];
-    const phonesRaw = String(req.body.phones || '');
-    const digitsList = [...new Set(phonesRaw.split(/[\s,;]+/).map((v) => v.replace(/[^0-9]/g, '')).filter((v) => v.length >= 8 && v.length <= 15))];
-    const redirect = (kind, message) => res.redirect(`/client/dashboard?${kind}=` + encodeURIComponent(message));
-
-    const live = getBotState(botId);
-    if (!live || !live.sock || live.status !== 'connected') {
-      return redirect('groupMembersError', 'Your bot is not connected right now.');
-    }
-    if (req.body.consent !== 'yes') {
-      return redirect('groupMembersError', 'Confirm that all selected people agreed to join before processing.');
-    }
-    if (!groupIds.length || !digitsList.length) {
-      return redirect('groupMembersError', 'Select at least one group and enter valid phone numbers.');
-    }
-    if (digitsList.length > 50 || groupIds.length > 10 || digitsList.length * groupIds.length > 100) {
-      return redirect('groupMembersError', 'Limit per run: 50 phone numbers, 10 groups, and 100 user/group actions. Split the list into smaller batches.');
-    }
-
-    try {
-      const participating = await live.sock.groupFetchAllParticipating();
-      const validGroupIds = new Set(Object.keys(participating || {}));
-      if (groupIds.some((id) => !validGroupIds.has(id))) {
-        return redirect('groupMembersError', 'One or more selected groups are no longer available. Refresh the dashboard and select them again.');
-      }
-
-      let added = 0;
-      let privacyBlocked = 0;
-      let failed = 0;
-      for (const groupId of groupIds) {
-        for (const digits of digitsList) {
-          const targetJid = `${digits}@s.whatsapp.net`;
-          try {
-            const result = await live.sock.groupParticipantsUpdate(groupId, [targetJid], 'add');
-            const code = String(result?.[0]?.status || '');
-            if (code === '200') added += 1;
-            else if (code === '403') privacyBlocked += 1;
-            else {
-              failed += 1;
-              logger.warn({ botId, groupId, targetJid, status: code }, 'Group add returned non-success status');
-            }
-          } catch (err) {
-            failed += 1;
-            logger.warn({ err, botId, groupId, targetJid }, 'Failed to add opted-in group member');
-          }
-          await new Promise((resolve) => setTimeout(resolve, 350));
-        }
-      }
-      const summary = `Finished: ${added} added, ${privacyBlocked} blocked by WhatsApp privacy settings (not confirmed joined), ${failed} failed. Users blocked by privacy may need an invite link.`;
-      return redirect(failed ? 'groupMembersError' : 'groupMembersSuccess', summary);
-    } catch (err) {
-      logger.warn({ err, botId, groupIds }, 'Bulk group member processing failed');
-      return redirect('groupMembersError', 'Could not process the selected users. Confirm the bot is a group admin and try again.');
-    }
   });
 
   router.post('/settings/post-status', async (req, res) => {
@@ -1076,22 +1052,12 @@ function createClientRoutes() {
   router.post('/settings/toggle', async (req, res) => {
     const botId = req.session.clientBotId;
     const feature = req.body.feature;
-    if (!FEATURE_COLUMNS.includes(feature)) {
-      if (req.get('X-Requested-With') === 'XMLHttpRequest') {
-        return res.status(400).json({ ok: false, error: 'Invalid feature' });
-      }
-      return res.redirect('/client/dashboard');
+    if (FEATURE_COLUMNS.includes(feature)) {
+      // A real checkbox only submits its field when checked — unchecked
+      // simply omits "enabled" from the form body. So presence = on.
+      await setFeature(botId, feature, req.body.enabled === '1');
     }
-
-    const enabled = req.body.enabled === '1';
-    await setFeature(botId, feature, enabled);
-
-    // AJAX toggle requests receive JSON so the dashboard stays on the same
-    // page and the browser address bar never navigates to the POST endpoint.
-    if (req.get('X-Requested-With') === 'XMLHttpRequest') {
-      return res.json({ ok: true, feature, enabled });
-    }
-    return res.redirect('/client/dashboard');
+    res.redirect('/client/dashboard');
   });
 
   router.post('/settings/stealth-mode', async (req, res) => {
