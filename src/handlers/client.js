@@ -305,10 +305,10 @@ function createClientRoutes() {
       <div class="card">
         <label><small>Source group</small><select id="sourceGroup"><option value="">Loading groups…</option></select></label>
         <label><small>Destination group</small><select id="destinationGroup"><option value="">Select destination group</option></select></label>
-        <p><small>Eligible members are loaded automatically when you choose both groups. The first 50 eligible members are preselected per run; uncheck anyone who has not agreed to join.</small></p>
-        <div id="preview" aria-live="polite"></div><div id="memberList"></div>
-        <label style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input id="consentConfirm" type="checkbox" style="width:auto;margin-top:4px"/><span>I confirm that every checked member has explicitly agreed to be added to the destination group.</span></label>
-        <button type="button" id="startBtn" disabled>Add selected members</button>
+        <p><small>Eligible members are detected and processed automatically after both groups are selected. Only proceed where the people being added have agreed to join. WhatsApp may block additions because of privacy settings.</small></p>
+        <div id="preview" aria-live="polite"></div><div id="memberList" hidden></div>
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input id="consentConfirm" type="checkbox" style="width:auto;margin-top:4px"/><span>I confirm that eligible members have agreed to join the destination group.</span></label>
+        <button type="button" id="startBtn" disabled>Start automatic adding</button>
         <div id="jobStatus" aria-live="polite"></div>
       </div>
       <p><a href="/client/dashboard">← Back to dashboard</a></p>
@@ -319,10 +319,10 @@ function createClientRoutes() {
         let previewData=null, poll=null;
         async function api(url, opts){const r=await fetch(url,Object.assign({credentials:'same-origin',headers:{'Accept':'application/json'}},opts||{}));const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||'Request failed');return j;}
         async function loadGroups(){try{const d=await api('/client/api/group-invites/groups');source.innerHTML='<option value="">Select source group</option>';dest.innerHTML='<option value="">Select destination group</option>';d.groups.forEach(g=>{const label=g.subject+' ('+g.participantCount+' members)';[source,dest].forEach(sel=>{const o=document.createElement('option');o.value=g.id;o.textContent=label;sel.appendChild(o);});});}catch(e){source.innerHTML='<option value="">'+e.message+'</option>';}}
-        function selectedJids(){return Array.from(memberList.querySelectorAll('input[name=memberJid]:checked')).map(x=>x.value);}
-        function updateStart(){const n=selectedJids().length;start.disabled=!(previewData&&consent.checked&&n>0&&n<=50&&source.value!==dest.value);start.textContent=n>50?'Select 50 or fewer members':'Add selected members ('+n+')';}
+        function selectedJids(){return (previewData&&previewData.members||[]).slice(0,50).map(x=>x.jid);}
+        function updateStart(){const n=selectedJids().length;start.disabled=!(previewData&&consent.checked&&n>0&&source.value!==dest.value);start.textContent='Start automatic adding ('+n+')';}
         let previewRequest=0;
-        async function loadEligible(){const request=++previewRequest;previewData=null;memberList.innerHTML='';updateStart();if(!source.value||!dest.value){preview.textContent='Choose both groups to load eligible members automatically.';return;}if(source.value===dest.value){preview.textContent='Choose two different groups.';return;}preview.textContent='Checking groups and selecting eligible members…';try{const data=await api('/client/api/group-invites/preview',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value})});if(request!==previewRequest)return;previewData=data;preview.textContent='Source members: '+data.sourceCount+' · Already in destination: '+data.alreadyInDestination+' · Eligible: '+data.eligible+' · Preselected this run: '+Math.min(data.members.length,50)+'. Only proceed if each selected person agreed to join.';memberList.innerHTML='';data.members.forEach((m,i)=>{const label=document.createElement('label');label.style.cssText='display:flex;gap:10px;align-items:center;padding:8px 0';const cb=document.createElement('input');cb.type='checkbox';cb.name='memberJid';cb.value=m.jid;cb.checked=i<50;cb.style.width='auto';cb.addEventListener('change',updateStart);const txt=document.createElement('span');txt.textContent=m.phone;label.append(cb,txt);memberList.appendChild(label);});updateStart();}catch(e){if(request===previewRequest)preview.textContent=e.message;}}
+        async function loadEligible(){const request=++previewRequest;previewData=null;memberList.innerHTML='';updateStart();if(!source.value||!dest.value){preview.textContent='Choose both groups to load eligible members automatically.';return;}if(source.value===dest.value){preview.textContent='Choose two different groups.';return;}preview.textContent='Checking groups and selecting eligible members…';try{const data=await api('/client/api/group-invites/preview',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value})});if(request!==previewRequest)return;previewData=data;preview.textContent='Source members: '+data.sourceCount+' · Already in destination: '+data.alreadyInDestination+' · Eligible: '+data.eligible+' · Automatically selected for this run: '+Math.min(data.members.length,50)+'. Confirm only if these members have agreed to join.';updateStart();}catch(e){if(request===previewRequest)preview.textContent=e.message;}}
         source.addEventListener('change',loadEligible);dest.addEventListener('change',loadEligible);consent.addEventListener('change',updateStart);
         start.addEventListener('click',async()=>{start.disabled=true;status.textContent='Starting background job…';try{const j=await api('/client/api/group-invites/start',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value,consentConfirmed:consent.checked,targetJids:selectedJids()})});status.textContent='Job queued.';if(poll)clearInterval(poll);poll=setInterval(async()=>{try{const x=await api('/client/api/group-invites/status/'+encodeURIComponent(j.jobId));status.textContent='Status: '+x.job.status+' · Processed: '+x.job.processed+'/'+x.job.total+' · Added: '+x.job.added+' · Failed/blocked: '+x.job.failed;if(['completed','failed'].includes(x.job.status)){clearInterval(poll);poll=null;}}catch(e){status.textContent=e.message;}},2000);}catch(e){status.textContent=e.message;updateStart();}});
         loadGroups();
@@ -350,9 +350,16 @@ function createClientRoutes() {
       if (!sourceId || !destinationId || sourceId===destinationId || !sourceId.endsWith('@g.us') || !destinationId.endsWith('@g.us')) return res.status(400).json({ok:false,error:'Choose two different valid groups.'});
       const all=await live.sock.groupFetchAllParticipating(), source=all[sourceId], destination=all[destinationId];
       if (!source || !destination) return res.status(403).json({ok:false,error:'Both groups must be accessible to your connected bot.'});
-      const destSet=new Set((destination.participants||[]).map(p=>p.id));
-      const eligible=(source.participants||[]).filter(p=>p.id && !destSet.has(p.id) && !p.id.endsWith('@lid') && /@s\.whatsapp\.net$/.test(p.id));
-      return res.json({ok:true,sourceCount:(source.participants||[]).length,alreadyInDestination:(source.participants||[]).filter(p=>destSet.has(p.id)).length,eligible:eligible.length,members:eligible.map(p=>({jid:p.id,phone:p.id.replace(/@s\.whatsapp\.net$/,'')}))});
+      const normalizeParticipant = (p) => {
+        const candidates=[p?.phoneNumber,p?.id,p?.jid].filter(Boolean).map(String);
+        const phoneJid=candidates.find(v=>/@s\.whatsapp\.net$/.test(v));
+        return phoneJid || null;
+      };
+      const destinationIds=new Set((destination.participants||[]).map(normalizeParticipant).filter(Boolean));
+      const sourceMembers=(source.participants||[]).map(p=>({participant:p,jid:normalizeParticipant(p)}));
+      const alreadyInDestination=sourceMembers.filter(x=>x.jid && destinationIds.has(x.jid)).length;
+      const eligible=[...new Map(sourceMembers.filter(x=>x.jid && !destinationIds.has(x.jid)).map(x=>[x.jid,x])).values()];
+      return res.json({ok:true,sourceCount:(source.participants||[]).length,alreadyInDestination,eligible:eligible.length,members:eligible.map(x=>({jid:x.jid,phone:x.jid.replace(/@s\.whatsapp\.net$/,'')}))});
     } catch(err) { logger.warn({err},'Group invitation preview failed'); return res.status(500).json({ok:false,error:'Could not preview participants.'}); }
   });
 
@@ -365,8 +372,12 @@ function createClientRoutes() {
       if (!sourceId || !destinationId || sourceId===destinationId) return res.status(400).json({ok:false,error:'Choose two different groups.'});
       const all=await live.sock.groupFetchAllParticipating(), source=all[sourceId], destination=all[destinationId];
       if (!source || !destination) return res.status(403).json({ok:false,error:'Both groups must be accessible to your connected bot.'});
-      const destSet=new Set((destination.participants||[]).map(p=>p.id));
-      const eligibleSet=new Set((source.participants||[]).map(p=>p.id).filter(id=>id && !destSet.has(id) && !id.endsWith('@lid') && /@s\.whatsapp\.net$/.test(id)));
+      const normalizeParticipant = (p) => {
+        const candidates=[p?.phoneNumber,p?.id,p?.jid].filter(Boolean).map(String);
+        return candidates.find(v=>/@s\.whatsapp\.net$/.test(v)) || null;
+      };
+      const destSet=new Set((destination.participants||[]).map(normalizeParticipant).filter(Boolean));
+      const eligibleSet=new Set((source.participants||[]).map(normalizeParticipant).filter(id=>id && !destSet.has(id)));
       const requested=Array.isArray(req.body.targetJids)?[...new Set(req.body.targetJids.map(x=>String(x)))]:[];
       if (!requested.length || requested.length>50) return res.status(400).json({ok:false,error:'Select 1–50 eligible members who agreed to join.'});
       if (requested.some(jid=>!eligibleSet.has(jid))) return res.status(400).json({ok:false,error:'Some selected members are no longer eligible. Reload the member list and try again.'});
