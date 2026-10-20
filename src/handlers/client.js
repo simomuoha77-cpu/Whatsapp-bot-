@@ -316,6 +316,7 @@ function createClientRoutes() {
         <label><small>Destination group</small><select id="destinationGroup"><option value="">Select destination group</option></select></label>
         <div id="preview" aria-live="polite"></div>
         <label style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input id="consentConfirm" type="checkbox" style="width:auto;margin-top:4px"/><span>I confirm that the members being added have agreed to join the destination group.</span></label>
+        <button type="button" id="testBtn" disabled>Test with 1 member first</button>
         <button type="button" id="startBtn" disabled>Start automatic adding</button>
         <div id="jobStatus" aria-live="polite"></div>
       </div>
@@ -323,17 +324,18 @@ function createClientRoutes() {
       <script>
       (function(){
         var source=document.getElementById('sourceGroup'), dest=document.getElementById('destinationGroup');
-        var preview=document.getElementById('preview'), consent=document.getElementById('consentConfirm'), start=document.getElementById('startBtn'), status=document.getElementById('jobStatus');
+        var preview=document.getElementById('preview'), consent=document.getElementById('consentConfirm'), start=document.getElementById('startBtn'), testBtn=document.getElementById('testBtn'), status=document.getElementById('jobStatus');
         var previewData=null, poll=null, previewRequest=0, running=false;
         function api(url, opts){return fetch(url,Object.assign({credentials:'same-origin',headers:{'Accept':'application/json'}},opts||{})).then(function(r){return r.json().then(function(j){if(!r.ok||!j.ok)throw new Error(j.error||'Request failed');return j;});});}
         function setText(el,t){el.textContent=t;}
         function loadGroups(){api('/client/api/group-invites/groups').then(function(d){source.innerHTML='<option value="">Select source group</option>';dest.innerHTML='<option value="">Select destination group</option>';d.groups.forEach(function(g){[source,dest].forEach(function(sel){var o=document.createElement('option');o.value=g.id;o.textContent=g.subject+' ('+g.participantCount+' members)';sel.appendChild(o);});});}).catch(function(e){setText(preview,e.message);});}
-        function updateStart(){var n=previewData?previewData.selectedForRun:0;start.disabled=running||!(previewData&&consent.checked&&n>0);setText(start,'Start automatic adding ('+n+')');}
-        function describePreview(d){return 'Source members: '+d.sourceCount+' · Destination members: '+d.destinationCount+' · Confirmed already in destination: '+d.alreadyInDestination+' · Eligible (phone number verified): '+d.eligible+' · Identity unresolved (not added): '+d.unresolved+' · Selected automatically this run: '+d.selectedForRun+(d.skippedBatchLimit?' (+'+d.skippedBatchLimit+' left for a later run)':'')+(d.eligible===0&&d.unresolved>0?' · No members could be verified by phone number; see server log.':'');}
+        function updateStart(){var n=previewData?previewData.selectedForRun:0;start.disabled=running||!(previewData&&consent.checked&&n>0);testBtn.disabled=start.disabled;setText(start,'Start automatic adding ('+n+')');}
+        function describePreview(d){return 'Source members: '+d.sourceCount+' · Destination members: '+d.destinationCount+' · Confirmed already in destination: '+d.alreadyInDestination+' · Eligible: '+d.eligible+' ('+d.eligibleByPhone+' by phone, '+d.eligibleByLid+' by WhatsApp ID) · Cannot be compared (not added): '+d.unresolved+' · Selected automatically this run: '+d.selectedForRun+(d.skippedBatchLimit?' (+'+d.skippedBatchLimit+' left for a later run)':'')+(d.eligible===0&&d.unresolved>0?' · No members could be compared; see server log.':'');}
         function loadEligible(){var req=++previewRequest;previewData=null;updateStart();if(!source.value||!dest.value){setText(preview,'Choose both groups to calculate eligible members.');return;}if(source.value===dest.value){setText(preview,'Choose two different groups.');return;}setText(preview,'Refreshing group data…');api('/client/api/group-invites/preview',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value})}).then(function(d){if(req!==previewRequest)return;previewData=d;setText(preview,describePreview(d));updateStart();}).catch(function(e){if(req===previewRequest){setText(preview,e.message);previewData=null;updateStart();}});}
         function describeJob(j){return 'Status: '+j.status+(j.stoppedReason?' ('+j.stoppedReason+')':'')+' · Processed: '+j.processed+'/'+j.total+' · Added (confirmed): '+j.added+' · Already in destination: '+j.alreadyInDestination+' · Blocked by privacy: '+j.privacyBlocked+' · Blocked by group permissions: '+j.permissionBlocked+' · Rate limited: '+j.rateLimited+' · Other failures: '+j.failed+' · Unresolved identity: '+j.unresolved+' · Skipped (batch limit): '+j.skipped+(j.notAttempted?' · Not attempted: '+j.notAttempted:'');}
         source.addEventListener('change',loadEligible);dest.addEventListener('change',loadEligible);consent.addEventListener('change',updateStart);
-        start.addEventListener('click',function(){if(running)return;running=true;updateStart();setText(status,'Starting…');api('/client/api/group-invites/start',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value,consentConfirmed:consent.checked===true})}).then(function(j){setText(status,'Job started.');if(poll)clearInterval(poll);poll=setInterval(function(){api('/client/api/group-invites/status/'+encodeURIComponent(j.jobId)).then(function(x){setText(status,describeJob(x.job));if(['completed','failed','stopped'].indexOf(x.job.status)>=0){clearInterval(poll);poll=null;running=false;updateStart();}}).catch(function(e){setText(status,e.message);});},2000);}).catch(function(e){setText(status,e.message);running=false;updateStart();});});
+        function go(testRun){if(running)return;running=true;updateStart();setText(status,'Starting…');api('/client/api/group-invites/start',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value,consentConfirmed:consent.checked===true,testRun:testRun})}).then(function(j){setText(status,'Job started.');if(poll)clearInterval(poll);poll=setInterval(function(){api('/client/api/group-invites/status/'+encodeURIComponent(j.jobId)).then(function(x){setText(status,describeJob(x.job));if(['completed','failed','stopped'].indexOf(x.job.status)>=0){clearInterval(poll);poll=null;running=false;updateStart();}}).catch(function(e){setText(status,e.message);});},2000);}).catch(function(e){setText(status,e.message);running=false;updateStart();});}
+        start.addEventListener('click',function(){go(false);});testBtn.addEventListener('click',function(){go(true);});
         loadGroups();
       })();
       </script>
@@ -356,7 +358,7 @@ function createClientRoutes() {
       const botId = req.session.clientBotId;
       const ids = validateGroupIds(req.body && req.body.sourceGroup, req.body && req.body.destinationGroup);
       const e = await computeEligibility({ sock: liveSock(botId), ...ids, logger });
-      return res.json({ok:true,sourceCount:e.sourceCount,destinationCount:e.destinationCount,alreadyInDestination:e.alreadyInDestination,eligible:e.eligible,unresolved:e.unresolved,malformed:e.malformed,duplicatesIgnored:e.duplicatesIgnored,destinationUnresolved:e.destinationUnresolved,selectedForRun:e.selectedForRun,skippedBatchLimit:e.skippedBatchLimit,batchLimit:e.batchLimit,sourceEmpty:e.sourceEmpty,diagnostics:e.diagnostics});
+      return res.json({ok:true,sourceCount:e.sourceCount,destinationCount:e.destinationCount,alreadyInDestination:e.alreadyInDestination,eligible:e.eligible,eligibleByPhone:e.eligibleByPhone,eligibleByLid:e.eligibleByLid,unresolved:e.unresolved,malformed:e.malformed,duplicatesIgnored:e.duplicatesIgnored,destinationUnresolved:e.destinationUnresolved,selectedForRun:e.selectedForRun,skippedBatchLimit:e.skippedBatchLimit,batchLimit:e.batchLimit,sourceEmpty:e.sourceEmpty,diagnostics:e.diagnostics});
     } catch (err) { return inviteError(res, err, 'Could not preview participants.'); }
   });
 
@@ -368,7 +370,7 @@ function createClientRoutes() {
     try {
       if (!req.body || req.body.consentConfirmed !== true) return res.status(400).json({ok:false,error:'Confirm that the members being added have agreed to join the destination group.'});
       const ids = validateGroupIds(req.body.sourceGroup, req.body.destinationGroup);
-      const elig = await computeEligibility({ sock: liveSock(botId), ...ids, logger }); // fresh recalculation, same helper as preview
+      const elig = await computeEligibility({ sock: liveSock(botId), ...ids, logger, limit: req.body.testRun === true ? 1 : undefined }); // fresh recalculation, same helper as preview
       if (!elig.selected.length) return res.status(400).json({ok:false,error:'No eligible members with verified phone-number identities were found ('+elig.alreadyInDestination+' already in destination, '+elig.unresolved+' unresolved).'});
       const jobId = crypto.randomUUID();
       const job = createJob({ jobId, botId, ...ids, elig });

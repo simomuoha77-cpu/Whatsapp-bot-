@@ -129,18 +129,26 @@ function compareGroups(sourceParticipants, destinationParticipants, opts = {}) {
     malformed: src.malformed,
     alreadyInDestination: 0,
     eligible: 0,
+    eligibleByPhone: 0,
+    eligibleByLid: 0,
     unresolved: 0,
     selfExcluded: 0,
     destinationUnresolved, // destination members we could not map to a phone number
     eligibleJids: [],
   };
+  const lidQueue = [];
 
   for (const m of src.list) {
     if ((m.pn && selfKeys.has(m.pn)) || (m.lid && selfKeys.has(m.lid))) { result.selfExcluded++; continue; }
     if ((m.pn && destPn.has(m.pn)) || (m.lid && destLid.has(m.lid))) { result.alreadyInDestination++; continue; }
-    if (m.pn) { result.eligibleJids.push(m.pn); result.eligible++; continue; }
-    result.unresolved++; // LID-only, no verified mapping: cannot be added or compared by phone
+    if (m.pn) { result.eligibleJids.push(m.pn); result.eligible++; result.eligibleByPhone++; continue; }
+    // LID-only. Comparison inside the LID namespace is sound only when the destination
+    // list is itself LID-identified (the same LID appearing in both groups is real evidence).
+    // WhatsApp, not us, decides whether a LID add succeeds; outcomes are reported as returned.
+    if (m.lid && destLid.size > 0) { lidQueue.push(m.lid); result.eligible++; result.eligibleByLid++; continue; }
+    result.unresolved++; // no basis for comparison or addition
   }
+  result.eligibleJids.push(...lidQueue);
   return result;
 }
 

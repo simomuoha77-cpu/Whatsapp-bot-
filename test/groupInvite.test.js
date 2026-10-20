@@ -161,3 +161,21 @@ test('F: formatStats contains only counts', () => {
   assert.ok(Object.values(s).every(v => typeof v === 'number'));
   assert.strictEqual(s.idPn, 1); assert.strictEqual(s.idLid, 1);
 });
+
+// ---- Live-shaped scenario: every id is @lid, no phoneNumber/jid/lid fields, no mapping ----
+test('LID-only groups: overlap by LID, rest eligible by LID, test run limits to 1', async () => {
+  const L = (i) => ({ id: lid(String(100000000000 + i)) });
+  const src = Array.from({ length: 20 }, (_, i) => L(i)), dst = Array.from({ length: 8 }, (_, i) => L(i));
+  const sock = mockSock({ src, dst });
+  const e = await gi.computeEligibility({ sock, sourceId: '1@g.us', destinationId: '2@g.us' });
+  assert.strictEqual(e.alreadyInDestination, 8); assert.strictEqual(e.eligible, 12);
+  assert.strictEqual(e.eligibleByLid, 12); assert.strictEqual(e.eligibleByPhone, 0); assert.strictEqual(e.unresolved, 0);
+  const t = await gi.computeEligibility({ sock, sourceId: '1@g.us', destinationId: '2@g.us', limit: 1 });
+  assert.strictEqual(t.selectedForRun, 1); assert.strictEqual(t.skippedBatchLimit, 11);
+  const job = await run(sock, t);
+  assert.strictEqual(job.added, 1); assert.ok(sock.calls[0][1][0].endsWith('@lid'));
+});
+test('LID-only source vs destination with no LIDs at all stays unresolved', () => {
+  const r = compareGroups([{ id: lid('999999') }], [{ id: pn('254700000001') }]);
+  assert.strictEqual(r.eligible, 0); assert.strictEqual(r.unresolved, 1);
+});
