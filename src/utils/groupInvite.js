@@ -83,7 +83,7 @@ async function runJob(job, { getSock, persist, sleep, logger, delayMs = 1000 }) 
   job.status = 'running';
   await persist(job);
   const queue = job.targets;
-  let stop = null;
+  let stop = null, sameErr = 0, lastErr = '';
   for (let i = 0; i < queue.length; i++) {
     const jid = queue[i];
     const sock = getSock();
@@ -97,6 +97,7 @@ async function runJob(job, { getSock, persist, sleep, logger, delayMs = 1000 }) 
         } catch (e) { logger && logger.warn({ err: e && e.message }, 'Destination re-check failed; relying on WhatsApp response'); }
       }
       const res = await sock.groupParticipantsUpdate(job.destinationId, [jid], 'add');
+      sameErr = 0;
       const outcome = classifyUpdateEntry(Array.isArray(res) ? res[0] : null);
       job[outcome]++;
       if (outcome !== 'added') logger && logger.info({ jid: maskJid(jid), outcome, code: Array.isArray(res) && res[0] ? res[0].status : null }, 'Group add not confirmed');
@@ -106,6 +107,9 @@ async function runJob(job, { getSock, persist, sleep, logger, delayMs = 1000 }) 
       if (outcome === 'rateLimited') { job.rateLimited++; job.processed++; stop = 'rate_limited'; break; }
       if (outcome === 'permissionBlocked') { job.permissionBlocked++; job.processed++; stop = 'no_permission'; break; }
       job.failed++;
+      const key = String((err && err.message) || 'error');
+      sameErr = key === lastErr ? sameErr + 1 : 1; lastErr = key;
+      if (sameErr >= 3) { job.processed++; stop = 'repeated_errors:' + key.slice(0, 40); break; } // WhatsApp keeps rejecting the same way; do not hammer it
     }
     job.processed++;
     await persist(job);

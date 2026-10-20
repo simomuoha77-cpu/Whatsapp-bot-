@@ -179,3 +179,11 @@ test('LID-only source vs destination with no LIDs at all stays unresolved', () =
   const r = compareGroups([{ id: lid('999999') }], [{ id: pn('254700000001') }]);
   assert.strictEqual(r.eligible, 0); assert.strictEqual(r.unresolved, 1);
 });
+
+test('E: repeated identical bad-request errors stop the job after 3 attempts', async () => {
+  const sock = mockSock({ src: many(20), dst: [], updateImpl: () => { throw new Error('bad-request'); } });
+  const e = await gi.computeEligibility({ sock, sourceId: '1@g.us', destinationId: '2@g.us' });
+  const job = await run(sock, e);
+  assert.strictEqual(sock.calls.length, 3); assert.strictEqual(job.added, 0); assert.strictEqual(job.failed, 3);
+  assert.strictEqual(job.status, 'stopped'); assert.ok(job.stoppedReason.startsWith('repeated_errors')); assert.strictEqual(job.notAttempted, 17);
+});
