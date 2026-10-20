@@ -187,3 +187,12 @@ test('E: repeated identical bad-request errors stop the job after 3 attempts', a
   assert.strictEqual(sock.calls.length, 3); assert.strictEqual(job.added, 0); assert.strictEqual(job.failed, 3);
   assert.strictEqual(job.status, 'stopped'); assert.ok(job.stoppedReason.startsWith('repeated_errors')); assert.strictEqual(job.notAttempted, 17);
 });
+
+test('F: dashboard connect page script parses and exposes no shareable slug URL', () => {
+  const src = fs.readFileSync(__dirname + '/../src/handlers/client.js', 'utf8');
+  const m = src.match(/router\.get\('\/connect'[\s\S]*?<script>([\s\S]*?)<\/script>/);
+  assert.ok(m); new vm.Script(m[1]);
+  const card = src.slice(src.indexOf('WhatsApp Connection</h3>'), src.indexOf('Subscribe / Renew'));
+  assert.ok(!/onboardingUrl|Generate new connection link/.test(card));
+  assert.ok(card.includes('/client/connect'));
+});
