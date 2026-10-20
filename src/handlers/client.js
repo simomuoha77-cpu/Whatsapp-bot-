@@ -301,28 +301,29 @@ function createClientRoutes() {
   router.get('/group-invites', async (req, res) => {
     res.send(layout('Group Member Invitations', `
       <h1>Group Member Invitations</h1>
-      <p>Select a source group and a destination group. Participants are only messaged when you confirm they have agreed to receive this invitation. WhatsApp privacy restrictions are respected.</p>
+      <p>Select a source group and a destination group. Select only members who have explicitly agreed to join the destination group. The bot will attempt direct addition; WhatsApp privacy settings and group permissions may block some additions.</p>
       <div class="card">
         <label><small>Source group</small><select id="sourceGroup"><option value="">Loading groups…</option></select></label>
         <label><small>Destination group</small><select id="destinationGroup"><option value="">Select destination group</option></select></label>
-        <button type="button" id="previewBtn" class="secondary">Preview eligible members</button>
-        <div id="preview" aria-live="polite"></div>
-        <label style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input id="consentConfirm" type="checkbox" style="width:auto;margin-top:4px"/><span>I confirm these selected source-group members have agreed to receive an invitation to the destination group.</span></label>
-        <button type="button" id="startBtn" disabled>Send group invitations</button>
+        <button type="button" id="previewBtn" class="secondary">Load eligible members</button>
+        <div id="preview" aria-live="polite"></div><div id="memberList"></div>
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input id="consentConfirm" type="checkbox" style="width:auto;margin-top:4px"/><span>I confirm that every checked member has explicitly agreed to be added to the destination group.</span></label>
+        <button type="button" id="startBtn" disabled>Add selected members</button>
         <div id="jobStatus" aria-live="polite"></div>
       </div>
       <p><a href="/client/dashboard">← Back to dashboard</a></p>
       <script>
       (function(){
         const source=document.getElementById('sourceGroup'), dest=document.getElementById('destinationGroup');
-        const preview=document.getElementById('preview'), consent=document.getElementById('consentConfirm'), start=document.getElementById('startBtn'), status=document.getElementById('jobStatus');
+        const preview=document.getElementById('preview'), memberList=document.getElementById('memberList'), consent=document.getElementById('consentConfirm'), start=document.getElementById('startBtn'), status=document.getElementById('jobStatus');
         let previewData=null, poll=null;
         async function api(url, opts){const r=await fetch(url,Object.assign({credentials:'same-origin',headers:{'Accept':'application/json'}},opts||{}));const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||'Request failed');return j;}
         async function loadGroups(){try{const d=await api('/client/api/group-invites/groups');source.innerHTML='<option value="">Select source group</option>';dest.innerHTML='<option value="">Select destination group</option>';d.groups.forEach(g=>{const label=g.subject+' ('+g.participantCount+' members)';[source,dest].forEach(sel=>{const o=document.createElement('option');o.value=g.id;o.textContent=label;sel.appendChild(o);});});}catch(e){source.innerHTML='<option value="">'+e.message+'</option>';}}
-        function updateStart(){start.disabled=!(previewData&&consent.checked&&previewData.eligible>0&&source.value!==dest.value);}
-        source.addEventListener('change',()=>{previewData=null;preview.textContent='';updateStart();});dest.addEventListener('change',()=>{previewData=null;preview.textContent='';updateStart();});consent.addEventListener('change',updateStart);
-        document.getElementById('previewBtn').addEventListener('click',async()=>{preview.textContent='Checking groups…';previewData=null;updateStart();try{if(!source.value||!dest.value||source.value===dest.value)throw new Error('Choose two different groups.');previewData=await api('/client/api/group-invites/preview',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value})});preview.textContent='Source members: '+previewData.sourceCount+' · Already in destination: '+previewData.alreadyInDestination+' · Available to invite: '+previewData.eligible+' . Only send invitations to people who agreed to receive them.';updateStart();}catch(e){preview.textContent=e.message;}});
-        start.addEventListener('click',async()=>{start.disabled=true;status.textContent='Starting background job…';try{const j=await api('/client/api/group-invites/start',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value,consentConfirmed:consent.checked})});status.textContent='Job queued.';if(poll)clearInterval(poll);poll=setInterval(async()=>{try{const x=await api('/client/api/group-invites/status/'+encodeURIComponent(j.jobId));status.textContent='Status: '+x.job.status+' · Processed: '+x.job.processed+'/'+x.job.total+' · Invitations sent: '+x.job.sent+' · Failed: '+x.job.failed;if(['completed','failed'].includes(x.job.status)){clearInterval(poll);poll=null;}}catch(e){status.textContent=e.message;}},2000);}catch(e){status.textContent=e.message;updateStart();}});
+        function selectedJids(){return Array.from(memberList.querySelectorAll('input[name=memberJid]:checked')).map(x=>x.value);}
+        function updateStart(){start.disabled=!(previewData&&consent.checked&&selectedJids().length>0&&source.value!==dest.value);}
+        source.addEventListener('change',()=>{previewData=null;preview.textContent='';memberList.innerHTML='';updateStart();});dest.addEventListener('change',()=>{previewData=null;preview.textContent='';memberList.innerHTML='';updateStart();});consent.addEventListener('change',updateStart);
+        document.getElementById('previewBtn').addEventListener('click',async()=>{preview.textContent='Checking groups…';previewData=null;updateStart();try{if(!source.value||!dest.value||source.value===dest.value)throw new Error('Choose two different groups.');previewData=await api('/client/api/group-invites/preview',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value})});preview.textContent='Source members: '+previewData.sourceCount+' · Already in destination: '+previewData.alreadyInDestination+' · Eligible to select: '+previewData.eligible+'. Check only members who explicitly agreed to join.';memberList.innerHTML='';previewData.members.forEach(m=>{const label=document.createElement('label');label.style.cssText='display:flex;gap:10px;align-items:center;padding:8px 0';const cb=document.createElement('input');cb.type='checkbox';cb.name='memberJid';cb.value=m.jid;cb.style.width='auto';cb.addEventListener('change',updateStart);const txt=document.createElement('span');txt.textContent=m.phone;label.append(cb,txt);memberList.appendChild(label);});updateStart();}catch(e){preview.textContent=e.message;}});
+        start.addEventListener('click',async()=>{start.disabled=true;status.textContent='Starting background job…';try{const j=await api('/client/api/group-invites/start',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({sourceGroup:source.value,destinationGroup:dest.value,consentConfirmed:consent.checked,targetJids:selectedJids()})});status.textContent='Job queued.';if(poll)clearInterval(poll);poll=setInterval(async()=>{try{const x=await api('/client/api/group-invites/status/'+encodeURIComponent(j.jobId));status.textContent='Status: '+x.job.status+' · Processed: '+x.job.processed+'/'+x.job.total+' · Added: '+x.job.added+' · Failed/blocked: '+x.job.failed;if(['completed','failed'].includes(x.job.status)){clearInterval(poll);poll=null;}}catch(e){status.textContent=e.message;}},2000);}catch(e){status.textContent=e.message;updateStart();}});
         loadGroups();
       })();
       </script>
@@ -349,8 +350,8 @@ function createClientRoutes() {
       const all=await live.sock.groupFetchAllParticipating(), source=all[sourceId], destination=all[destinationId];
       if (!source || !destination) return res.status(403).json({ok:false,error:'Both groups must be accessible to your connected bot.'});
       const destSet=new Set((destination.participants||[]).map(p=>p.id));
-      const eligible=(source.participants||[]).filter(p=>p.id && !destSet.has(p.id) && !p.id.endsWith('@lid'));
-      return res.json({ok:true,sourceCount:(source.participants||[]).length,alreadyInDestination:(source.participants||[]).filter(p=>destSet.has(p.id)).length,eligible:eligible.length});
+      const eligible=(source.participants||[]).filter(p=>p.id && !destSet.has(p.id) && !p.id.endsWith('@lid') && /@s\.whatsapp\.net$/.test(p.id));
+      return res.json({ok:true,sourceCount:(source.participants||[]).length,alreadyInDestination:(source.participants||[]).filter(p=>destSet.has(p.id)).length,eligible:eligible.length,members:eligible.map(p=>({jid:p.id,phone:p.id.replace(/@s\.whatsapp\.net$/,'')}))});
     } catch(err) { logger.warn({err},'Group invitation preview failed'); return res.status(500).json({ok:false,error:'Could not preview participants.'}); }
   });
 
@@ -363,16 +364,16 @@ function createClientRoutes() {
       if (!sourceId || !destinationId || sourceId===destinationId) return res.status(400).json({ok:false,error:'Choose two different groups.'});
       const all=await live.sock.groupFetchAllParticipating(), source=all[sourceId], destination=all[destinationId];
       if (!source || !destination) return res.status(403).json({ok:false,error:'Both groups must be accessible to your connected bot.'});
-      const metadata=await live.sock.groupMetadata(destinationId);
-      const inviteCode=await live.sock.groupInviteCode(destinationId);
-      if (!inviteCode) return res.status(400).json({ok:false,error:'WhatsApp did not provide an invite link for the destination group.'});
       const destSet=new Set((destination.participants||[]).map(p=>p.id));
-      const targets=(source.participants||[]).map(p=>p.id).filter(id=>id && !destSet.has(id) && !id.endsWith('@lid') && /@s\.whatsapp\.net$/.test(id));
+      const eligibleSet=new Set((source.participants||[]).map(p=>p.id).filter(id=>id && !destSet.has(id) && !id.endsWith('@lid') && /@s\.whatsapp\.net$/.test(id)));
+      const requested=Array.isArray(req.body.targetJids)?[...new Set(req.body.targetJids.map(x=>String(x)))]:[];
+      if (!requested.length || requested.length>50) return res.status(400).json({ok:false,error:'Select 1–50 eligible members who agreed to join.'});
+      if (requested.some(jid=>!eligibleSet.has(jid))) return res.status(400).json({ok:false,error:'Some selected members are no longer eligible. Reload the member list and try again.'});
       const jobId=crypto.randomUUID();
-      const job={jobId,botId,sourceId,destinationId,destinationName:metadata.subject||'the group',inviteLink:'https://chat.whatsapp.com/'+inviteCode,targets,processed:0,sent:0,failed:0,total:targets.length,status:'queued',createdAt:new Date().toISOString()};
+      const job={jobId,botId,sourceId,destinationId,targets:requested,processed:0,added:0,failed:0,total:requested.length,status:'queued',createdAt:new Date().toISOString()};
       groupInviteJobs.set(jobId,job);
       const db = await getDb();
-      await db.collection('groupInviteJobs').insertOne({...job, _id: jobId, targets: [...targets]});
+      await db.collection('groupInviteJobs').insertOne({...job, _id: jobId, targets: [...requested]});
       res.json({ok:true,jobId});
       setImmediate(async()=>{
         job.status='running';
@@ -382,17 +383,19 @@ function createClientRoutes() {
           const current=getBotState(botId);
           if (!current || !current.sock || current.status!=='connected') { job.failed += job.total-job.processed; job.status='failed'; break; }
           try {
-            // Only send explicit invitations after the owner confirms consent.
-            await current.sock.sendMessage(jid,{text:'Hello! You are invited to join '+job.destinationName+'.\n\nJoin using this link:\n'+job.inviteLink+'\n\nYou are welcome to join if interested.'});
-            job.sent++;
-          } catch(err) { job.failed++; logger.warn({err,botId,jobId},'Group invitation delivery failed'); }
+            const result=await current.sock.groupParticipantsUpdate(destinationId,[jid],'add');
+            const entry=Array.isArray(result)?result[0]:null;
+            const code=String(entry?.status||'');
+            if (code==='200' || code==='201') job.added++;
+            else { job.failed++; logger.warn({botId,jobId,destinationId,jid,code},'WhatsApp did not confirm direct group addition'); }
+          } catch(err) { job.failed++; logger.warn({err,botId,jobId,destinationId,jid},'Direct group addition failed'); }
           job.processed++;
-          await db.collection('groupInviteJobs').updateOne({_id:jobId,botId},{ $set:{processed:job.processed,sent:job.sent,failed:job.failed,status:job.status} });
-          await sleep(1200); // conservative sequential pacing; never parallel blast
+          await db.collection('groupInviteJobs').updateOne({_id:jobId,botId},{ $set:{processed:job.processed,added:job.added,failed:job.failed,status:job.status} });
+          await sleep(1000);
         }
         if(job.status!=='failed') job.status='completed';
-        job.targets=undefined; // discard participant list when processing ends
-        await db.collection('groupInviteJobs').updateOne({_id:jobId,botId},{ $set:{status:job.status,processed:job.processed,sent:job.sent,failed:job.failed,finishedAt:new Date().toISOString()}, $unset:{targets:''} });
+        job.targets=undefined;
+        await db.collection('groupInviteJobs').updateOne({_id:jobId,botId},{ $set:{status:job.status,processed:job.processed,added:job.added,failed:job.failed,finishedAt:new Date().toISOString()}, $unset:{targets:''} });
       });
     } catch(err) { logger.warn({err},'Failed to start group invitation job'); if(!res.headersSent) return res.status(500).json({ok:false,error:'Could not start invitation job.'}); }
   });
@@ -400,8 +403,8 @@ function createClientRoutes() {
   router.get('/api/group-invites/status/:jobId', (req,res) => {
     (async()=>{
       const job=groupInviteJobs.get(req.params.jobId);
-      if(job && job.botId===req.session.clientBotId) return res.json({ok:true,job:{jobId:job.jobId,status:job.status,processed:job.processed,sent:job.sent,failed:job.failed,total:job.total}});
-      try { const db=await getDb(); const saved=await db.collection('groupInviteJobs').findOne({_id:req.params.jobId,botId:req.session.clientBotId},{projection:{_id:1,status:1,processed:1,sent:1,failed:1,total:1}}); if(!saved) return res.status(404).json({ok:false,error:'Invitation job not found.'}); return res.json({ok:true,job:{jobId:saved._id,status:saved.status,processed:saved.processed,sent:saved.sent,failed:saved.failed,total:saved.total}}); } catch(err) { return res.status(500).json({ok:false,error:'Could not read job status.'}); }
+      if(job && job.botId===req.session.clientBotId) return res.json({ok:true,job:{jobId:job.jobId,status:job.status,processed:job.processed,added:job.added,failed:job.failed,total:job.total}});
+      try { const db=await getDb(); const saved=await db.collection('groupInviteJobs').findOne({_id:req.params.jobId,botId:req.session.clientBotId},{projection:{_id:1,status:1,processed:1,added:1,failed:1,total:1}}); if(!saved) return res.status(404).json({ok:false,error:'Invitation job not found.'}); return res.json({ok:true,job:{jobId:saved._id,status:saved.status,processed:saved.processed,added:saved.added||0,failed:saved.failed,total:saved.total}}); } catch(err) { return res.status(500).json({ok:false,error:'Could not read job status.'}); }
     })();
   });
 
