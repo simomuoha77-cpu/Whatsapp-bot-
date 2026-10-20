@@ -40,6 +40,7 @@ const { getSubscription, isSubscriptionActive, extendSubscriptionByYMD, setSubsc
 const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { refreshScheduler, buildStatusJidList } = require('./scheduler');
+const { createApkStudioRoutes } = require('./apkStudio');
 
 function layout(title, body) {
   return `
@@ -97,7 +98,7 @@ function layout(title, body) {
 }
 
 function nav() {
-  return `<nav><a href="/admin">Clients</a><a href="/admin/logout">Logout</a></nav>`;
+  return `<nav><a href="/admin">Clients</a><a href="/admin/apk-studio">APK Studio</a><a href="/admin/logout">Logout</a></nav>`;
 }
 
 // A separate layout from the generic admin one above — full-bleed, dark
@@ -178,6 +179,9 @@ function createAdminRoutes() {
   });
 
   router.use(requirePlatformAuth);
+
+  // APK Studio (admin-only; mounted after auth)
+  router.use('/apk-studio', createApkStudioRoutes({ layout, nav }));
 
   // --- Client list + create new ---
   router.get('/', async (req, res) => {
@@ -575,22 +579,16 @@ function createAdminRoutes() {
       </div>
 
       <div class="card">
-        <h3>👥 Target Groups — Add/Invite Users</h3>
-        <p><small>Select one or more groups and paste the phone numbers of people who have agreed to join (international format, one per line or separated by commas). The bot must be a group admin. WhatsApp may block direct adding due to a user's privacy settings; when WhatsApp provides an invite fallback, use that instead. This tool does not bypass WhatsApp restrictions.</small></p>
+        <h3>👤 Add Member to Group</h3>
+        <p><small>Adds someone (e.g. re-adding a removed member) to a group this bot is admin of. The bot must be a group admin, and if WhatsApp's privacy rules don't allow a direct add, that person gets sent an invite link automatically instead — this is normal WhatsApp behavior, not something this bypasses.</small></p>
         ${addMemberMessage}
         ${botGroups.length > 0 ? `
           <form method="POST" action="/admin/bot/${botId}/add-to-group">
-            <label for="target-group-select"><strong>Choose target group(s)</strong></label>
-            <select id="target-group-select" name="groupId" multiple size="5" required>
+            <select name="groupId" required>
               ${botGroups.map((g) => `<option value="${g.id}">${g.subject}</option>`).join('')}
             </select>
-            <small>On mobile, tap to select groups; use Ctrl/command for multiple selections on a computer.</small>
-            <textarea name="phones" rows="5" placeholder="254712345678&#10;254701234567" required style="width:100%;box-sizing:border-box;padding:10px;background:#1c1c1c;color:#eee;border:1px solid #333;border-radius:6px;margin:8px 0;"></textarea>
-            <label style="display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:14px;">
-              <input type="checkbox" name="consent" value="yes" required style="width:auto;margin-top:4px;" />
-              <span>I confirm these people have agreed to join the selected WhatsApp group(s).</span>
-            </label>
-            <button type="submit">Process Selected Users</button>
+            <input name="phone" placeholder="Phone number, e.g. 254712345678" required />
+            <button type="submit">Add</button>
           </form>
         ` : '<p>Bot must be connected and in at least one group.</p>'}
       </div>
@@ -876,69 +874,37 @@ function createAdminRoutes() {
 
   router.post('/bot/:id/add-to-group', async (req, res) => {
     const botId = parseInt(req.params.id, 10);
-    const groupIds = [...new Set([].concat(req.body.groupId || []).map((v) => String(v).trim()).filter(Boolean))];
-    const phonesRaw = String(req.body.phones || req.body.phone || '');
-    const digitsList = [...new Set(phonesRaw.split(/[\s,;]+/).map((v) => v.replace(/[^0-9]/g, '')).filter((v) => v.length >= 8 && v.length <= 15))];
-    const redirect = (kind, message) => res.redirect(`/admin/bot/${botId}?${kind}=` + encodeURIComponent(message));
+    const groupId = req.body.groupId;
+    const digits = (req.body.phone || '').replace(/[^0-9]/g, '');
 
     const live = getBotState(botId);
     if (!live || !live.sock || live.status !== 'connected') {
-      return redirect('addMemberError', 'Bot is not connected right now.');
+      return res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent('Bot is not connected right now.'));
     }
-    if (req.body.consent !== 'yes') {
-      return redirect('addMemberError', 'Confirm that all selected people agreed to join before processing.');
-    }
-    if (!groupIds.length || !digitsList.length) {
-      return redirect('addMemberError', 'Select at least one target group and enter valid phone numbers.');
-    }
-    // Bound a single admin operation to prevent accidental large-scale additions.
-    if (digitsList.length > 50 || groupIds.length > 10 || digitsList.length * groupIds.length > 100) {
-      return redirect('addMemberError', 'Limit per run: 50 phone numbers, 10 groups, and 100 user/group actions. Split the list into smaller batches.');
+    if (!digits || !groupId) {
+      return res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent('Group and phone number are required.'));
     }
 
+    const targetJid = `${digits}@s.whatsapp.net`;
     try {
-      const participating = await live.sock.groupFetchAllParticipating();
-      const validGroupIds = new Set(Object.keys(participating || {}));
-      if (groupIds.some((id) => !validGroupIds.has(id))) {
-        return redirect('addMemberError', 'One or more selected groups are no longer available to this bot. Refresh the page and select them again.');
+      const result = await live.sock.groupParticipantsUpdate(groupId, [targetJid], 'add');
+      const entry = result?.[0];
+      // WhatsApp's own status codes for this action: 200 = added directly,
+      // 403 = their privacy settings blocked a direct add (WhatsApp itself
+      // then auto-sends them an invite link instead — normal behavior),
+      // 408 = request timed out, 404 = not a WhatsApp number.
+      if (entry?.status === '200') {
+        res.redirect(`/admin/bot/${botId}?addMemberSuccess=` + encodeURIComponent(`Added ${digits} to the group.`));
+      } else if (entry?.status === '403') {
+        res.redirect(`/admin/bot/${botId}?addMemberSuccess=` + encodeURIComponent(`${digits} couldn't be added directly (their privacy settings) — WhatsApp sent them an invite link instead.`));
+      } else if (entry?.status === '404') {
+        res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent(`${digits} is not a valid WhatsApp number.`));
+      } else {
+        res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent(`Could not add ${digits} (status ${entry?.status || 'unknown'}). The bot may not be a group admin.`));
       }
-
-      let added = 0;
-      let inviteFallback = 0;
-      let failed = 0;
-      const failures = [];
-      for (const groupId of groupIds) {
-        for (const digits of digitsList) {
-          const targetJid = `${digits}@s.whatsapp.net`;
-          try {
-            const result = await live.sock.groupParticipantsUpdate(groupId, [targetJid], 'add');
-            const entry = result?.[0];
-            const code = String(entry?.status || '');
-            if (code === '200') {
-              added += 1;
-            } else if (code === '403') {
-              // WhatsApp denied direct addition; count as fallback only because
-              // WhatsApp may issue its own invite, never as a confirmed join.
-              inviteFallback += 1;
-            } else {
-              failed += 1;
-              if (failures.length < 5) failures.push(`${digits} (${code || 'unknown'})`);
-            }
-          } catch (err) {
-            failed += 1;
-            logger.warn({ err, botId, groupId, targetJid }, 'Failed to add opted-in group member');
-            if (failures.length < 5) failures.push(`${digits} (request failed)`);
-          }
-          // Small pause between operations to reduce bursts; this is not a bypass
-          // for WhatsApp rate limits or group-admin/privacy restrictions.
-          await new Promise((resolve) => setTimeout(resolve, 350));
-        }
-      }
-      const summary = `Finished: ${added} added, ${inviteFallback} direct-adds blocked by privacy (not confirmed joined), ${failed} failed across ${groupIds.length} group(s).` + (failures.length ? ` Examples: ${failures.join(', ')}.` : '');
-      return redirect(failed ? 'addMemberError' : 'addMemberSuccess', summary);
     } catch (err) {
-      logger.warn({ err, botId, groupIds }, 'Bulk group member processing failed');
-      return redirect('addMemberError', 'Could not process the selected users. Check that the bot is a group admin and try again.');
+      logger.warn({ err, botId, groupId, targetJid }, 'Failed to add member to group');
+      res.redirect(`/admin/bot/${botId}?addMemberError=` + encodeURIComponent('Failed to add member. The bot may not be a group admin.'));
     }
   });
 
