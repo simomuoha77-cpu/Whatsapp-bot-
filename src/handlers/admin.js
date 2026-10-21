@@ -41,6 +41,7 @@ const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { refreshScheduler, buildStatusJidList } = require('./scheduler');
 const { createApkStudioRoutes } = require('./apkStudio');
+const { createWebAppBuilderRoutes } = require('./webAppBuilder');
 
 function layout(title, body) {
   return `
@@ -98,7 +99,7 @@ function layout(title, body) {
 }
 
 function nav() {
-  return `<nav><a href="/admin">Clients</a><a href="/admin/apk-studio">APK Studio</a><a href="/admin/logout">Logout</a></nav>`;
+  return `<nav><a href="/admin">Clients</a><a href="/admin/apk-studio">APK Studio</a><a href="/admin/webapp-builder">App Builder</a><a href="/admin/logout">Logout</a></nav>`;
 }
 
 // A separate layout from the generic admin one above — full-bleed, dark
@@ -182,6 +183,7 @@ function createAdminRoutes() {
 
   // APK Studio (admin-only; mounted after auth)
   router.use('/apk-studio', createApkStudioRoutes({ layout, nav }));
+  router.use('/webapp-builder', createWebAppBuilderRoutes({ layout, nav }));
 
   // --- Client list + create new ---
   router.get('/', async (req, res) => {
