@@ -8,7 +8,7 @@ const { createClientAccount, verifyClientLogin, getClientAccountByPhone, getClie
 const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, extendSubscriptionByYMD } = require('../db/subscriptions');
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
-const { getVpnPackages, getVpnPackage, getVpnPurchasesForBot, createVpnPurchase } = require('../db/vpn');
+const { getVpnPackages, getVpnPackage, getVpnPurchasesForBot, reserveVpnUris, releaseVpnReservation, completeVpnReservation } = require('../db/vpn');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, requestPairingCodeForBot } = require('../utils/botManager');
 const { getDb } = require('../db/mongo');
@@ -1328,42 +1328,44 @@ function createClientRoutes() {
 
   router.get('/vpn', async (req, res) => {
     const botId = req.session.clientBotId;
-    const packages = (await getVpnPackages()).filter((p) => p.active !== false);
+    const allPackages = await getVpnPackages();
     const purchases = await getVpnPurchasesForBot(botId);
+    const activePackages = allPackages.filter((p) => p.active !== false);
+    const activeDays = new Set(activePackages.map((p) => Number(p.day)));
+    const purchasedOnly = [...new Set(purchases.map((p) => Number(p.day)))].filter((day) => !activeDays.has(day)).map((day) => { const purchase = purchases.find((p) => Number(p.day) === day); return { day, title: purchase.title || `Day ${day} VPN`, amount: purchase.amount, active: false, remaining: 0 }; });
+    const packages = [...activePackages, ...purchasedOnly].sort((a, b) => Number(a.day) - Number(b.day));
     const pendingVpnPayments = (await getPaymentsForBot(botId, 30)).filter((payment) => payment.purpose === 'vpn' && payment.status === 'pending');
-    // Keep purchased links visible even if an admin later deactivates a day.
-    const activeDays = new Set(packages.map((p) => Number(p.day)));
-    const purchasedOnly = [...new Set(purchases.map((p) => Number(p.day)))].filter((day) => !activeDays.has(day)).map((day) => {
-      const purchase = purchases.find((p) => Number(p.day) === day);
-      return { day, title: purchase.title || `Day ${day} VPN`, amount: purchase.amount, active: false };
-    });
-    const displayPackages = [...packages, ...purchasedOnly].sort((a, b) => Number(a.day) - Number(b.day));
-    const cards = displayPackages.map((p) => {
+    const cards = packages.map((p) => {
       const purchased = purchases.filter((x) => Number(x.day) === Number(p.day));
-      const latest = purchased[0];
-      return `<div class="card"><h3>${String(p.title).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h3><p>Day ${p.day} access</p><p style="font-size:1.15rem;color:#fff;font-weight:700">KES ${p.amount}</p>
-        ${latest ? `<p><span class="pill" style="background:#0d2f22;color:#4ade80">PURCHASED</span></p><div style="word-break:break-all;background:#0c1218;padding:10px;border-radius:8px" id="vpn-uri-${p.day}">${String(latest.uri).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('vpn-uri-${p.day}').textContent).then(()=>this.textContent='Copied!')">Copy URI</button><a href="${String(latest.uri).replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer"><button type="button">Open URI</button></a>` : `<form method="POST" action="/client/vpn/${p.day}/pay"><input name="phoneNumber" value="${String(req.session.clientPhoneNumber || '').replace(/"/g, '&quot;')}" placeholder="M-Pesa phone number" required /><button type="submit">Buy with M-Pesa</button></form>`}
-      </div>`;
+      const links = purchased.map((item, index) => `<div style="margin:10px 0;padding:10px;background:#0c1218;border-radius:8px"><strong>URI ${index + 1}</strong><div style="word-break:break-all" id="vpn-uri-${item.id}">${String(item.uri).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('vpn-uri-${item.id}').textContent).then(()=>this.textContent='Copied!')">Copy URI</button><a href="${String(item.uri).replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer"><button type="button">Open URI</button></a></div>`).join('');
+      const remaining = Number(p.remaining || 0);
+      return `<div class="card"><h3>${String(p.title).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h3><p>Day ${p.day} access</p><p style="font-size:1.15rem;color:#fff;font-weight:700">KES ${p.amount} per URI</p><p><strong>${remaining} remaining</strong></p>${links}${remaining > 0 ? `<form method="POST" action="/client/vpn/${p.day}/pay"><label>Quantity</label><input name="quantity" type="number" min="1" max="${remaining}" value="1" required /><input name="phoneNumber" value="${String(req.session.clientPhoneNumber || '').replace(/"/g, '&quot;')}" placeholder="M-Pesa phone number" required /><button type="submit">Buy with M-Pesa</button></form>` : '<p style="color:#f59e0b;font-weight:700">Zero remaining — sold out</p>'}</div>`;
     }).join('') || '<div class="card"><p>No VPN packages are available yet. Please check again later.</p></div>';
-    const pendingNotice = pendingVpnPayments.length ? '<div class="card" style="border-color:#b7791f"><strong>Payment confirmation pending</strong><p>If you have entered your M-Pesa PIN, please wait. This page will refresh automatically while Safaricom confirms your payment. Do not pay again.</p></div>' : '';
+    const pendingNotice = pendingVpnPayments.length ? '<div class="card" style="border-color:#b7791f"><strong>Payment confirmation pending</strong><p>If you have entered your M-Pesa PIN, please wait. Do not pay again.</p></div>' : '';
     const refresh = pendingVpnPayments.length ? '<meta http-equiv="refresh" content="5;url=/client/vpn">' : '';
-    res.send(layout('VPN Packages', `${refresh}<div class="topbar"><a class="brand" href="/client/dashboard">← Dashboard</a><span>VPN</span></div><h1>VPN Packages</h1><p>Choose a package and pay securely using M-Pesa. Your VPN URI appears here after payment confirmation.</p>${pendingNotice}${cards}`));
+    res.send(layout('VPN Packages', `${refresh}<div class="topbar"><a class="brand" href="/client/dashboard">← Dashboard</a><span>VPN</span></div><h1>VPN Packages</h1><p>Choose how many URIs you want. Each URI costs the package price. Purchased links appear below after M-Pesa confirms payment.</p>${pendingNotice}${cards}`));
   });
 
   router.post('/vpn/:day/pay', async (req, res) => {
     const botId = req.session.clientBotId;
     const day = Number(req.params.day);
     const pkg = await getVpnPackage(day);
+    const quantity = Math.max(1, Math.floor(Number(req.body.quantity || 1)));
     const phoneNumber = (req.body.phoneNumber || '').replace(/[^0-9]/g, '');
     if (!pkg || pkg.active === false || !Number.isInteger(day) || day < 1 || day > 7) return res.status(404).send(layout('Package unavailable', '<p>This VPN package is not available.</p><a href="/client/vpn">Back to VPN</a>'));
     if (!phoneNumber) return res.status(400).send(layout('Invalid phone', '<p>Enter a valid M-Pesa phone number.</p><a href="/client/vpn">Back</a>'));
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > Number(pkg.remaining || 0)) return res.status(400).send(layout('Insufficient stock', `<p>Only ${Number(pkg.remaining || 0)} URI(s) remain. Change the quantity and try again.</p><a href="/client/vpn">Back</a>`));
+    const reservation = await reserveVpnUris(day, quantity);
+    if (!reservation) return res.status(409).send(layout('Sold out', '<p>Stock changed while you were ordering. Please refresh and try again.</p><a href="/client/vpn">Back</a>'));
     const callbackUrl = `${req.protocol}://${req.get('host')}/client/payment-callback`;
     try {
-      const result = await initiateStkPush({ phoneNumber, amount: pkg.amount, accountReference: `VPN${day}B${botId}`, transactionDesc: `VPN Day ${day}`, callbackUrl });
-      await createPaymentRecord({ botId, checkoutRequestId: result.CheckoutRequestID, merchantRequestId: result.MerchantRequestID, phoneNumber, amount: pkg.amount, plan: `vpn-day-${day}`, purpose: 'vpn', vpnDay: day, vpnTitle: pkg.title, vpnUri: pkg.uri });
-      res.send(layout('M-Pesa payment', `<h2>📱 Check your phone</h2><p>An M-Pesa prompt for <strong>KES ${pkg.amount}</strong> (${String(pkg.title).replace(/</g, '&lt;')}) was sent to ${phoneNumber}. Enter your PIN to complete payment.</p><p>Your VPN URI will appear in the VPN tab once payment is confirmed.</p><a href="/client/vpn">Return to VPN tab</a><meta http-equiv="refresh" content="10;url=/client/vpn">`));
+      const totalAmount = Number(pkg.amount) * quantity;
+      const result = await initiateStkPush({ phoneNumber, amount: totalAmount, accountReference: `VPN${day}B${botId}`, transactionDesc: `VPN Day ${day} x${quantity}`, callbackUrl });
+      await createPaymentRecord({ botId, checkoutRequestId: result.CheckoutRequestID, merchantRequestId: result.MerchantRequestID, phoneNumber, amount: totalAmount, plan: `vpn-day-${day}`, purpose: 'vpn', vpnDay: day, vpnTitle: pkg.title, vpnUris: reservation.uris, vpnReservationId: reservation.token, vpnQuantity: quantity });
+      res.send(layout('M-Pesa payment', `<h2>📱 Check your phone</h2><p>An M-Pesa prompt for <strong>KES ${totalAmount}</strong> (${quantity} × ${String(pkg.title).replace(/</g, '&lt;')}) was sent to ${phoneNumber}. Your ${quantity} VPN URI(s) will appear after payment confirmation.</p><a href="/client/vpn">Return to VPN tab</a><meta http-equiv="refresh" content="10;url=/client/vpn">`));
     } catch (err) {
-      logger.error({ err, botId, day }, 'Failed to initiate VPN package STK push');
+      await releaseVpnReservation(reservation.token);
+      logger.error({ err, botId, day, quantity }, 'Failed to initiate VPN package STK push');
       res.status(500).send(layout('Payment failed', `<h2>Payment request failed</h2><p>${String(err.message || 'Please try again.').replace(/</g, '&lt;')}</p><a href="/client/vpn">Back to VPN</a>`));
     }
   });
@@ -1445,10 +1447,9 @@ function createPaymentCallbackRoute() {
       }
 
       if (parsed.success) {
-        if (payment.purpose === 'vpn' && payment.vpn_uri && payment.vpn_day) {
-          // Save the purchased URI first. If a later DB operation fails,
-          // Safaricom's retry will find the existing purchase and finish safely.
-          await createVpnPurchase({ botId: payment.bot_id, day: payment.vpn_day, title: payment.vpn_title, amount: payment.amount, uri: payment.vpn_uri, checkoutRequestId: parsed.checkoutRequestId, mpesaReceiptNumber: parsed.mpesaReceiptNumber });
+        if (payment.purpose === 'vpn' && payment.vpn_reservation_id && payment.vpn_day) {
+          // Convert reserved stock into purchased links before acknowledging payment.
+          await completeVpnReservation({ token: payment.vpn_reservation_id, botId: payment.bot_id, day: payment.vpn_day, title: payment.vpn_title, amount: payment.amount, checkoutRequestId: parsed.checkoutRequestId, mpesaReceiptNumber: parsed.mpesaReceiptNumber });
           await markPaymentResult(parsed.checkoutRequestId, { status: 'success', mpesaReceiptNumber: parsed.mpesaReceiptNumber, resultDesc: parsed.resultDesc });
           logger.info({ botId: payment.bot_id, day: payment.vpn_day, checkoutRequestId: parsed.checkoutRequestId }, 'VPN URI unlocked after successful payment');
         } else {
@@ -1457,6 +1458,7 @@ function createPaymentCallbackRoute() {
           logger.info({ botId: payment.bot_id, plan: payment.plan }, 'Subscription extended after successful payment');
         }
       } else {
+        if (payment.purpose === 'vpn' && payment.vpn_reservation_id) await releaseVpnReservation(payment.vpn_reservation_id);
         await markPaymentResult(parsed.checkoutRequestId, {
           status: parsed.resultCode === 1032 ? 'cancelled' : 'failed',
           resultDesc: parsed.resultDesc,

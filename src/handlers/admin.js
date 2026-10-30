@@ -195,27 +195,27 @@ function createAdminRoutes() {
         <form method="POST" action="/admin/vpn/${day}">
           <label>Package title</label><input name="title" value="${String(p.title || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" placeholder="e.g. 1 Day VPN" required />
           <label>Price (KES)</label><input name="amount" type="number" min="1" step="1" value="${p.amount || ''}" required />
-          <label>VPN purchase URI</label><input name="uri" type="url" value="${String(p.uri || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" placeholder="https://ehi.link/..." required />
+          <label>VPN URIs (one URI per line; each line is one stock item)</label><textarea name="uris" rows="5" placeholder="https://ehi.link/first\nhttps://ehi.link/second">${String((p.uris || []).join('\n')).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea><p><small>Available: ${Number(p.remaining || 0)} · Reserved: ${Number((p.inventory || {}).reserved || 0)} · Sold: ${Number((p.inventory || {}).sold || 0)}</small></p>
           <label><input name="active" type="checkbox" value="1" ${p.active === false ? '' : 'checked'} style="width:auto" /> Active / visible to users</label>
           <button type="submit">Save Day ${day}</button>
         </form>
         ${p.updated_at ? `<p><small>Last updated: ${new Date(p.updated_at).toLocaleString()}</small></p>` : '<p><small>Not configured yet.</small></p>'}
       </div>`;
     }).join('');
-    res.send(layout('VPN Packages', `${nav()}<h2>VPN Packages</h2><p>Configure one package for each day. Users only receive the URI after their M-Pesa payment is confirmed.</p>${forms}`));
+    res.send(layout('VPN Packages', `${nav()}<h2>VPN Packages</h2><p>Configure each day's title and price, then paste multiple VPN URIs (one per line). Each successful purchase consumes the requested number of URIs. Sold links are never added back automatically.</p>${forms}`));
   });
 
   router.post('/vpn/:day', async (req, res) => {
     const day = Number(req.params.day);
     const title = (req.body.title || '').trim();
     const amount = Number(req.body.amount);
-    const uri = (req.body.uri || '').trim();
-    let parsed;
-    try { parsed = new URL(uri); } catch (_) { return res.status(400).send(layout('Invalid VPN URI', `${nav()}<p>Enter a valid HTTPS or HTTP URI.</p><a href="/admin/vpn">Back</a>`)); }
-    if (!Number.isInteger(day) || day < 1 || day > 7 || !title || !Number.isFinite(amount) || amount < 1 || !['https:', 'http:'].includes(parsed.protocol)) {
+    const uris = String(req.body.uris || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    const invalidUri = uris.find(value => { try { const u = new URL(value); return !['https:', 'http:'].includes(u.protocol); } catch (_) { return true; } });
+    if (invalidUri) return res.status(400).send(layout('Invalid VPN URI', `${nav()}<p>Every line must be a valid HTTP or HTTPS URI.</p><a href="/admin/vpn">Back</a>`));
+    if (!Number.isInteger(day) || day < 1 || day > 7 || !title || !Number.isFinite(amount) || amount < 1 ) {
       return res.status(400).send(layout('Invalid VPN package', `${nav()}<p>Check the day, title, price and URI.</p><a href="/admin/vpn">Back</a>`));
     }
-    await saveVpnPackage({ day, title, amount: Math.round(amount), uri: parsed.href, active: req.body.active === '1' });
+    await saveVpnPackage({ day, title, amount: Math.round(amount), uris, active: req.body.active === '1' });
     res.redirect('/admin/vpn?saved=' + day);
   });
 
