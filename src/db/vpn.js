@@ -1,10 +1,35 @@
 const { getDb, nextSequence } = require('./mongo');
 const { randomUUID } = require('crypto');
 
+// Every URI ages by one package day per 24 hours from its original upload time.
+// Day 7 -> Day 6 -> ... -> Day 1 -> expired and removed from sale.
+async function ageVpnInventory(db, now = new Date()) {
+  const rows = await db.collection('vpn_uris').find({ status: 'available' }).toArray();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  for (const row of rows) {
+    const uploadedAt = row.created_at ? new Date(row.created_at) : now;
+    const ageDays = Math.floor(Math.max(0, now.getTime() - uploadedAt.getTime()) / DAY_MS);
+    if (!ageDays) continue;
+    const nextDay = Number(row.initial_day ?? row.day) - ageDays;
+    if (nextDay <= 0) {
+      await db.collection('vpn_uris').updateOne(
+        { _id: row._id, status: 'available' },
+        { $set: { status: 'expired', expired_at: now }, $unset: { reservation_id: '', reserved_at: '' } }
+      );
+    } else {
+      await db.collection('vpn_uris').updateOne(
+        { _id: row._id, status: 'available' },
+        { $set: { day: nextDay, initial_day: Number(row.initial_day ?? row.day), aged_days: ageDays, last_aged_at: now } }
+      );
+    }
+  }
+}
+
 async function getVpnPackages() {
   const db = await getDb();
+  await ageVpnInventory(db);
   const packages = await db.collection('vpn_packages').find({}).sort({ day: 1 }).toArray();
-  for (const p of packages) { if (p.uri) { let u; try { u = new URL(p.uri); } catch (_) {} if (u && ['https:', 'http:'].includes(u.protocol)) await db.collection('vpn_uris').updateOne({ day: Number(p.day), uri: u.href }, { $setOnInsert: { day: Number(p.day), uri: u.href, status: 'available', created_at: new Date() } }, { upsert: true }); } }
+  for (const p of packages) { if (p.uri) { let u; try { u = new URL(p.uri); } catch (_) {} if (u && ['https:', 'http:'].includes(u.protocol)) await db.collection('vpn_uris').updateOne({ day: Number(p.day), uri: u.href }, { $setOnInsert: { day: Number(p.day), initial_day: Number(p.day), uri: u.href, status: 'available', created_at: new Date() } }, { upsert: true }); } }
   const uriRows = await db.collection('vpn_uris').find({}).toArray();
   const uriMap = new Map();
   for (const row of uriRows) { if (!uriMap.has(Number(row.day))) uriMap.set(Number(row.day), []); uriMap.get(Number(row.day)).push(row); }
@@ -17,15 +42,17 @@ async function getVpnPackages() {
 
 async function getVpnPackage(day) {
   const db = await getDb();
+  await ageVpnInventory(db);
   const pkg = await db.collection('vpn_packages').findOne({ day: Number(day) });
   if (!pkg) return null;
-  if (pkg.uri) { let u; try { u = new URL(pkg.uri); } catch (_) {} if (u && ['https:', 'http:'].includes(u.protocol)) await db.collection('vpn_uris').updateOne({ day: Number(day), uri: u.href }, { $setOnInsert: { day: Number(day), uri: u.href, status: 'available', created_at: new Date() } }, { upsert: true }); }
+  if (pkg.uri) { let u; try { u = new URL(pkg.uri); } catch (_) {} if (u && ['https:', 'http:'].includes(u.protocol)) await db.collection('vpn_uris').updateOne({ day: Number(day), uri: u.href }, { $setOnInsert: { day: Number(day), initial_day: Number(day), uri: u.href, status: 'available', created_at: new Date() } }, { upsert: true }); }
   const stock = await db.collection('vpn_uris').countDocuments({ day: Number(day), status: 'available' });
   return { ...pkg, remaining: stock };
 }
 
 async function saveVpnPackage({ day, title, amount, uris, uri, active = true }) {
   const db = await getDb();
+  await ageVpnInventory(db);
   const n = Number(day);
   const cleanUris = [...new Set((Array.isArray(uris) ? uris : String(uri || '').split(/\r?\n/)).map(x => String(x || '').trim()).filter(Boolean))];
   const doc = { day: n, title: String(title || '').trim(), amount: Number(amount), active: Boolean(active), updated_at: new Date() };
@@ -35,19 +62,20 @@ async function saveVpnPackage({ day, title, amount, uris, uri, active = true }) 
     let parsed;
     try { parsed = new URL(value); } catch (_) { continue; }
     if (!['https:', 'http:'].includes(parsed.protocol)) continue;
-    await db.collection('vpn_uris').updateOne({ day: n, uri: parsed.href }, { $setOnInsert: { day: n, uri: parsed.href, status: 'available', created_at: new Date() } }, { upsert: true });
+    await db.collection('vpn_uris').updateOne({ day: n, uri: parsed.href }, { $setOnInsert: { day: n, initial_day: n, uri: parsed.href, status: 'available', created_at: new Date() } }, { upsert: true });
   }
   // Migrate a legacy single URI into inventory once, if present.
   if (uri && !Array.isArray(uris)) {
     let parsed;
     try { parsed = new URL(String(uri).trim()); } catch (_) {}
-    if (parsed && ['https:', 'http:'].includes(parsed.protocol)) await db.collection('vpn_uris').updateOne({ day: n, uri: parsed.href }, { $setOnInsert: { day: n, uri: parsed.href, status: 'available', created_at: new Date() } }, { upsert: true });
+    if (parsed && ['https:', 'http:'].includes(parsed.protocol)) await db.collection('vpn_uris').updateOne({ day: n, uri: parsed.href }, { $setOnInsert: { day: n, initial_day: n, uri: parsed.href, status: 'available', created_at: new Date() } }, { upsert: true });
   }
   return doc;
 }
 
 async function reserveVpnUris(day, quantity) {
   const db = await getDb();
+  await ageVpnInventory(db);
   const token = randomUUID();
   const reserved = [];
   for (let i = 0; i < quantity; i++) {
@@ -95,4 +123,4 @@ async function completeVpnReservation({ token, botId, day, title, amount, checko
   return purchases;
 }
 
-module.exports = { getVpnPackages, getVpnPackage, saveVpnPackage, reserveVpnUris, releaseVpnReservation, getVpnPurchasesForBot, completeVpnReservation };
+module.exports = { ageVpnInventory, getVpnPackages, getVpnPackage, saveVpnPackage, reserveVpnUris, releaseVpnReservation, getVpnPurchasesForBot, completeVpnReservation };
