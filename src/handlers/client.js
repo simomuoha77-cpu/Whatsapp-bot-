@@ -8,6 +8,7 @@ const { createClientAccount, verifyClientLogin, getClientAccountByPhone, getClie
 const { startTrial, getSubscription, isSubscriptionActive, extendSubscription, extendSubscriptionByYMD } = require('../db/subscriptions');
 const { getPricingSettings } = require('../db/pricingSettings');
 const { createPaymentRecord, getPaymentByCheckoutId, markPaymentResult, getPaymentsForBot } = require('../db/payments');
+const { getVpnPackages, getVpnPackage, getVpnPurchasesForBot, createVpnPurchase } = require('../db/vpn');
 const { initiateStkPush, parseStkCallback } = require('../utils/daraja');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect, requestPairingCodeForBot } = require('../utils/botManager');
 const { getDb } = require('../db/mongo');
