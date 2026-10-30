@@ -41,7 +41,7 @@ const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { refreshScheduler, buildStatusJidList } = require('./scheduler');
 const { createApkStudioRoutes } = require('./apkStudio');
-const { createWebAppBuilderRoutes } = require('./webAppBuilder');
+const { getVpnPackages, saveVpnPackage } = require('../db/vpn');
 
 function layout(title, body) {
   return `
@@ -99,7 +99,7 @@ function layout(title, body) {
 }
 
 function nav() {
-  return `<nav><a href="/admin">Clients</a><a href="/admin/apk-studio">APK Studio</a><a href="/admin/webapp-builder">App Builder</a><a href="/admin/logout">Logout</a></nav>`;
+  return `<nav><a href="/admin">Clients</a><a href="/admin/vpn">VPN Packages</a><a href="/admin/apk-studio">APK Studio</a><a href="/admin/logout">Logout</a></nav>`;
 }
 
 // A separate layout from the generic admin one above — full-bleed, dark
@@ -183,7 +183,41 @@ function createAdminRoutes() {
 
   // APK Studio (admin-only; mounted after auth)
   router.use('/apk-studio', createApkStudioRoutes({ layout, nav }));
-  router.use('/webapp-builder', createWebAppBuilderRoutes({ layout, nav }));
+
+  // --- VPN package management (seven day packages) ---
+  router.get('/vpn', async (req, res) => {
+    const packages = await getVpnPackages();
+    const byDay = new Map(packages.map((p) => [Number(p.day), p]));
+    const forms = Array.from({ length: 7 }, (_, i) => {
+      const day = i + 1;
+      const p = byDay.get(day) || {};
+      return `<div class="card"><h3>Day ${day}</h3>
+        <form method="POST" action="/admin/vpn/${day}">
+          <label>Package title</label><input name="title" value="${String(p.title || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" placeholder="e.g. 1 Day VPN" required />
+          <label>Price (KES)</label><input name="amount" type="number" min="1" step="1" value="${p.amount || ''}" required />
+          <label>VPN purchase URI</label><input name="uri" type="url" value="${String(p.uri || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" placeholder="https://ehi.link/..." required />
+          <label><input name="active" type="checkbox" value="1" ${p.active === false ? '' : 'checked'} style="width:auto" /> Active / visible to users</label>
+          <button type="submit">Save Day ${day}</button>
+        </form>
+        ${p.updated_at ? `<p><small>Last updated: ${new Date(p.updated_at).toLocaleString()}</small></p>` : '<p><small>Not configured yet.</small></p>'}
+      </div>`;
+    }).join('');
+    res.send(layout('VPN Packages', `${nav()}<h2>VPN Packages</h2><p>Configure one package for each day. Users only receive the URI after their M-Pesa payment is confirmed.</p>${forms}`));
+  });
+
+  router.post('/vpn/:day', async (req, res) => {
+    const day = Number(req.params.day);
+    const title = (req.body.title || '').trim();
+    const amount = Number(req.body.amount);
+    const uri = (req.body.uri || '').trim();
+    let parsed;
+    try { parsed = new URL(uri); } catch (_) { return res.status(400).send(layout('Invalid VPN URI', `${nav()}<p>Enter a valid HTTPS or HTTP URI.</p><a href="/admin/vpn">Back</a>`)); }
+    if (!Number.isInteger(day) || day < 1 || day > 7 || !title || !Number.isFinite(amount) || amount < 1 || !['https:', 'http:'].includes(parsed.protocol)) {
+      return res.status(400).send(layout('Invalid VPN package', `${nav()}<p>Check the day, title, price and URI.</p><a href="/admin/vpn">Back</a>`));
+    }
+    await saveVpnPackage({ day, title, amount: Math.round(amount), uri: parsed.href, active: req.body.active === '1' });
+    res.redirect('/admin/vpn?saved=' + day);
+  });
 
   // --- Client list + create new ---
   router.get('/', async (req, res) => {

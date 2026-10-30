@@ -1,6 +1,6 @@
 const { getDb, nextSequence } = require('./mongo');
 
-async function createPaymentRecord({ botId, checkoutRequestId, merchantRequestId, phoneNumber, amount, plan }) {
+async function createPaymentRecord({ botId, checkoutRequestId, merchantRequestId, phoneNumber, amount, plan, purpose = 'subscription', vpnDay = null, vpnTitle = null, vpnUri = null }) {
   const db = await getDb();
   const id = await nextSequence('payments');
   const doc = {
@@ -11,6 +11,10 @@ async function createPaymentRecord({ botId, checkoutRequestId, merchantRequestId
     phone_number: phoneNumber,
     amount,
     plan,
+    purpose,
+    vpn_day: vpnDay,
+    vpn_title: vpnTitle,
+    vpn_uri: vpnUri,
     status: 'pending',
     mpesa_receipt_number: null,
     result_desc: null,

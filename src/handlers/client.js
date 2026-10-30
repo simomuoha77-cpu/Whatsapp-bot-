@@ -582,6 +582,7 @@ function createClientRoutes() {
 
     res.send(layout('Dashboard', `
       <h2>Your Bot</h2>
+      <div class="card" style="display:flex;gap:10px;flex-wrap:wrap"><a href="/client/dashboard" style="padding:9px 14px;background:#00a884;color:white;border-radius:7px">Dashboard</a><a href="/client/vpn" style="padding:9px 14px;background:#263442;color:white;border-radius:7px">VPN</a></div>
       <div class="card"><h3>Group Member Invitations</h3><p>Choose a source group and destination group to invite members who have agreed to receive an invitation.</p><a href="/client/group-invites"><button type="button">Open Group Invitations</button></a></div>
       <p style="color:#888;font-size:0.85em;">Bot ID: ${botId} (compare this against the botId shown in any .v debug reply from WhatsApp — if they don't match, that's the bug)</p>
       ${disconnectBanner}
@@ -1324,6 +1325,45 @@ function createClientRoutes() {
     res.redirect('/client/dashboard');
   });
 
+  router.get('/vpn', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const packages = (await getVpnPackages()).filter((p) => p.active !== false);
+    const purchases = await getVpnPurchasesForBot(botId);
+    // Keep purchased links visible even if an admin later deactivates a day.
+    const activeDays = new Set(packages.map((p) => Number(p.day)));
+    const purchasedOnly = [...new Set(purchases.map((p) => Number(p.day)))].filter((day) => !activeDays.has(day)).map((day) => {
+      const purchase = purchases.find((p) => Number(p.day) === day);
+      return { day, title: purchase.title || `Day ${day} VPN`, amount: purchase.amount, active: false };
+    });
+    const displayPackages = [...packages, ...purchasedOnly].sort((a, b) => Number(a.day) - Number(b.day));
+    const cards = displayPackages.map((p) => {
+      const purchased = purchases.filter((x) => Number(x.day) === Number(p.day));
+      const latest = purchased[0];
+      return `<div class="card"><h3>${String(p.title).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h3><p>Day ${p.day} access</p><p style="font-size:1.15rem;color:#fff;font-weight:700">KES ${p.amount}</p>
+        ${latest ? `<p><span class="pill" style="background:#0d2f22;color:#4ade80">PURCHASED</span></p><div style="word-break:break-all;background:#0c1218;padding:10px;border-radius:8px" id="vpn-uri-${p.day}">${String(latest.uri).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('vpn-uri-${p.day}').textContent).then(()=>this.textContent='Copied!')">Copy URI</button><a href="${String(latest.uri).replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer"><button type="button">Open URI</button></a>` : `<form method="POST" action="/client/vpn/${p.day}/pay"><input name="phoneNumber" value="${String(req.session.clientPhoneNumber || '').replace(/"/g, '&quot;')}" placeholder="M-Pesa phone number" required /><button type="submit">Buy with M-Pesa</button></form>`}
+      </div>`;
+    }).join('') || '<div class="card"><p>No VPN packages are available yet. Please check again later.</p></div>';
+    res.send(layout('VPN Packages', `<div class="topbar"><a class="brand" href="/client/dashboard">← Dashboard</a><span>VPN</span></div><h1>VPN Packages</h1><p>Choose a package and pay securely using M-Pesa. Your VPN URI appears here after payment confirmation.</p>${cards}`));
+  });
+
+  router.post('/vpn/:day/pay', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const day = Number(req.params.day);
+    const pkg = await getVpnPackage(day);
+    const phoneNumber = (req.body.phoneNumber || '').replace(/[^0-9]/g, '');
+    if (!pkg || pkg.active === false || !Number.isInteger(day) || day < 1 || day > 7) return res.status(404).send(layout('Package unavailable', '<p>This VPN package is not available.</p><a href="/client/vpn">Back to VPN</a>'));
+    if (!phoneNumber) return res.status(400).send(layout('Invalid phone', '<p>Enter a valid M-Pesa phone number.</p><a href="/client/vpn">Back</a>'));
+    const callbackUrl = `${req.protocol}://${req.get('host')}/client/payment-callback`;
+    try {
+      const result = await initiateStkPush({ phoneNumber, amount: pkg.amount, accountReference: `VPN${day}B${botId}`, transactionDesc: `VPN Day ${day}`, callbackUrl });
+      await createPaymentRecord({ botId, checkoutRequestId: result.CheckoutRequestID, merchantRequestId: result.MerchantRequestID, phoneNumber, amount: pkg.amount, plan: `vpn-day-${day}`, purpose: 'vpn', vpnDay: day, vpnTitle: pkg.title, vpnUri: pkg.uri });
+      res.send(layout('M-Pesa payment', `<h2>📱 Check your phone</h2><p>An M-Pesa prompt for <strong>KES ${pkg.amount}</strong> (${String(pkg.title).replace(/</g, '&lt;')}) was sent to ${phoneNumber}. Enter your PIN to complete payment.</p><p>Your VPN URI will appear in the VPN tab once payment is confirmed.</p><a href="/client/vpn">Return to VPN tab</a><meta http-equiv="refresh" content="10;url=/client/vpn">`));
+    } catch (err) {
+      logger.error({ err, botId, day }, 'Failed to initiate VPN package STK push');
+      res.status(500).send(layout('Payment failed', `<h2>Payment request failed</h2><p>${String(err.message || 'Please try again.').replace(/</g, '&lt;')}</p><a href="/client/vpn">Back to VPN</a>`));
+    }
+  });
+
   router.post('/pay', async (req, res) => {
     const botId = req.session.clientBotId;
     const plan = req.body.plan === 'yearly' ? 'yearly' : 'monthly';
@@ -1395,13 +1435,18 @@ function createPaymentCallbackRoute() {
       if (payment.status !== 'pending') return;
 
       if (parsed.success) {
-        await markPaymentResult(parsed.checkoutRequestId, {
-          status: 'success',
-          mpesaReceiptNumber: parsed.mpesaReceiptNumber,
-          resultDesc: parsed.resultDesc,
-        });
-        await extendSubscription(payment.bot_id, payment.plan);
-        logger.info({ botId: payment.bot_id, plan: payment.plan }, 'Subscription extended after successful payment');
+        if (payment.purpose === 'vpn' && payment.vpn_uri && payment.vpn_day) {
+          // Persist the entitlement before closing the payment record. The
+          // purchase insert is idempotent by checkout_request_id, so a
+          // retried Safaricom callback cannot create duplicate purchases.
+          await createVpnPurchase({ botId: payment.bot_id, day: payment.vpn_day, title: payment.vpn_title, amount: payment.amount, uri: payment.vpn_uri, checkoutRequestId: parsed.checkoutRequestId, mpesaReceiptNumber: parsed.mpesaReceiptNumber });
+          await markPaymentResult(parsed.checkoutRequestId, { status: 'success', mpesaReceiptNumber: parsed.mpesaReceiptNumber, resultDesc: parsed.resultDesc });
+          logger.info({ botId: payment.bot_id, day: payment.vpn_day }, 'VPN URI unlocked after successful payment');
+        } else {
+          await markPaymentResult(parsed.checkoutRequestId, { status: 'success', mpesaReceiptNumber: parsed.mpesaReceiptNumber, resultDesc: parsed.resultDesc });
+          await extendSubscription(payment.bot_id, payment.plan);
+          logger.info({ botId: payment.bot_id, plan: payment.plan }, 'Subscription extended after successful payment');
+        }
       } else {
         await markPaymentResult(parsed.checkoutRequestId, {
           status: parsed.resultCode === 1032 ? 'cancelled' : 'failed',

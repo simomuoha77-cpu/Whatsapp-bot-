@@ -241,3 +241,12 @@ in sandbox mode first.
   commands work at all is toggleable, not which specific commands.
 - Session storage is filesystem-based — fine for one server, but won't
   survive Render free-tier restarts without a persistent disk.
+
+
+## VPN packages (7-day shop)
+
+Platform admins can open `/admin/vpn` and configure up to seven separate packages (Day 1 through Day 7). Each day has its own title, KES price, purchasing URI, and active/hidden setting. Paste the URI supplied by the VPN provider (for example, an `https://ehi.link/...` link).
+
+Clients see a **VPN** tab in `/client/dashboard`. They choose a package, enter an M-Pesa number, and receive an STK Push. The URI is saved as a purchase entitlement and is shown only after Daraja's successful payment callback is received. The VPN tab then provides **Copy URI** and **Open URI** actions. Deactivating a package hides it from new purchases but does not remove links already purchased by clients.
+
+The VPN shop uses the same Daraja credentials and callback endpoint as client subscriptions; no separate payment credentials are required. Configure the existing `DARAJA_CONSUMER_KEY`, `DARAJA_CONSUMER_SECRET`, `DARAJA_SHORTCODE`, `DARAJA_PASSKEY`, and public callback URL as described above.
