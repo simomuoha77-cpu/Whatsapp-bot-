@@ -1330,6 +1330,7 @@ function createClientRoutes() {
     const botId = req.session.clientBotId;
     const packages = (await getVpnPackages()).filter((p) => p.active !== false);
     const purchases = await getVpnPurchasesForBot(botId);
+    const pendingVpnPayments = (await getPaymentsForBot(botId, 30)).filter((payment) => payment.purpose === 'vpn' && payment.status === 'pending');
     // Keep purchased links visible even if an admin later deactivates a day.
     const activeDays = new Set(packages.map((p) => Number(p.day)));
     const purchasedOnly = [...new Set(purchases.map((p) => Number(p.day)))].filter((day) => !activeDays.has(day)).map((day) => {
@@ -1344,7 +1345,9 @@ function createClientRoutes() {
         ${latest ? `<p><span class="pill" style="background:#0d2f22;color:#4ade80">PURCHASED</span></p><div style="word-break:break-all;background:#0c1218;padding:10px;border-radius:8px" id="vpn-uri-${p.day}">${String(latest.uri).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('vpn-uri-${p.day}').textContent).then(()=>this.textContent='Copied!')">Copy URI</button><a href="${String(latest.uri).replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer"><button type="button">Open URI</button></a>` : `<form method="POST" action="/client/vpn/${p.day}/pay"><input name="phoneNumber" value="${String(req.session.clientPhoneNumber || '').replace(/"/g, '&quot;')}" placeholder="M-Pesa phone number" required /><button type="submit">Buy with M-Pesa</button></form>`}
       </div>`;
     }).join('') || '<div class="card"><p>No VPN packages are available yet. Please check again later.</p></div>';
-    res.send(layout('VPN Packages', `<div class="topbar"><a class="brand" href="/client/dashboard">← Dashboard</a><span>VPN</span></div><h1>VPN Packages</h1><p>Choose a package and pay securely using M-Pesa. Your VPN URI appears here after payment confirmation.</p>${cards}`));
+    const pendingNotice = pendingVpnPayments.length ? '<div class="card" style="border-color:#b7791f"><strong>Payment confirmation pending</strong><p>If you have entered your M-Pesa PIN, please wait. This page will refresh automatically while Safaricom confirms your payment. Do not pay again.</p></div>' : '';
+    const refresh = pendingVpnPayments.length ? '<meta http-equiv="refresh" content="5;url=/client/vpn">' : '';
+    res.send(layout('VPN Packages', `${refresh}<div class="topbar"><a class="brand" href="/client/dashboard">← Dashboard</a><span>VPN</span></div><h1>VPN Packages</h1><p>Choose a package and pay securely using M-Pesa. Your VPN URI appears here after payment confirmation.</p>${pendingNotice}${cards}`));
   });
 
   router.post('/vpn/:day/pay', async (req, res) => {
@@ -1421,28 +1424,33 @@ function createPaymentCallbackRoute() {
   router.use(express.json());
 
   router.post('/payment-callback', async (req, res) => {
-    res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
-
     try {
       const parsed = parseStkCallback(req.body);
-      if (!parsed) return;
+      if (!parsed || !parsed.checkoutRequestId) {
+        return res.status(400).json({ ResultCode: 1, ResultDesc: 'Invalid callback payload' });
+      }
 
       const payment = await getPaymentByCheckoutId(parsed.checkoutRequestId);
       if (!payment) {
-        logger.warn({ checkoutRequestId: parsed.checkoutRequestId }, 'Callback for unknown payment');
-        return;
+        // Do not acknowledge an unknown payment: a callback can race with the
+        // payment-record insert, and Safaricom should retry rather than lose it.
+        logger.warn({ checkoutRequestId: parsed.checkoutRequestId }, 'Callback for unknown payment; requesting retry');
+        return res.status(503).json({ ResultCode: 1, ResultDesc: 'Payment record not ready; retry callback' });
       }
 
-      if (payment.status !== 'pending') return;
+      // Duplicate callbacks are safe to acknowledge after the first durable
+      // processing has completed.
+      if (payment.status !== 'pending') {
+        return res.status(200).json({ ResultCode: 0, ResultDesc: 'Already processed' });
+      }
 
       if (parsed.success) {
         if (payment.purpose === 'vpn' && payment.vpn_uri && payment.vpn_day) {
-          // Persist the entitlement before closing the payment record. The
-          // purchase insert is idempotent by checkout_request_id, so a
-          // retried Safaricom callback cannot create duplicate purchases.
+          // Save the purchased URI first. If a later DB operation fails,
+          // Safaricom's retry will find the existing purchase and finish safely.
           await createVpnPurchase({ botId: payment.bot_id, day: payment.vpn_day, title: payment.vpn_title, amount: payment.amount, uri: payment.vpn_uri, checkoutRequestId: parsed.checkoutRequestId, mpesaReceiptNumber: parsed.mpesaReceiptNumber });
           await markPaymentResult(parsed.checkoutRequestId, { status: 'success', mpesaReceiptNumber: parsed.mpesaReceiptNumber, resultDesc: parsed.resultDesc });
-          logger.info({ botId: payment.bot_id, day: payment.vpn_day }, 'VPN URI unlocked after successful payment');
+          logger.info({ botId: payment.bot_id, day: payment.vpn_day, checkoutRequestId: parsed.checkoutRequestId }, 'VPN URI unlocked after successful payment');
         } else {
           await markPaymentResult(parsed.checkoutRequestId, { status: 'success', mpesaReceiptNumber: parsed.mpesaReceiptNumber, resultDesc: parsed.resultDesc });
           await extendSubscription(payment.bot_id, payment.plan);
@@ -1454,8 +1462,11 @@ function createPaymentCallbackRoute() {
           resultDesc: parsed.resultDesc,
         });
       }
+
+      return res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
     } catch (err) {
-      logger.error({ err }, 'Error processing payment callback');
+      logger.error({ err }, 'Error processing payment callback; requesting Safaricom retry');
+      return res.status(503).json({ ResultCode: 1, ResultDesc: 'Temporary processing error; retry callback' });
     }
   });
 
