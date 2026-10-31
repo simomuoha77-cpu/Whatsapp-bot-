@@ -73,6 +73,29 @@ async function saveVpnPackage({ day, title, amount, uris, uri, active = true }) 
   return doc;
 }
 
+async function getVpnInventoryForAdmin(day) {
+  const db = await getDb();
+  await ageVpnInventory(db);
+  return db.collection('vpn_uris').find({ day: Number(day), status: 'available' }).sort({ created_at: 1 }).toArray();
+}
+
+async function updateAvailableVpnUri({ day, oldUri, newUri }) {
+  const db = await getDb();
+  await ageVpnInventory(db);
+  const result = await db.collection('vpn_uris').updateOne(
+    { day: Number(day), uri: String(oldUri), status: 'available' },
+    { $set: { uri: String(newUri), updated_at: new Date() } }
+  );
+  return result.modifiedCount === 1;
+}
+
+async function deleteAvailableVpnUri({ day, uri }) {
+  const db = await getDb();
+  await ageVpnInventory(db);
+  const result = await db.collection('vpn_uris').deleteOne({ day: Number(day), uri: String(uri), status: 'available' });
+  return result.deletedCount === 1;
+}
+
 async function reserveVpnUris(day, quantity) {
   const db = await getDb();
   await ageVpnInventory(db);
@@ -123,4 +146,4 @@ async function completeVpnReservation({ token, botId, day, title, amount, checko
   return purchases;
 }
 
-module.exports = { ageVpnInventory, getVpnPackages, getVpnPackage, saveVpnPackage, reserveVpnUris, releaseVpnReservation, getVpnPurchasesForBot, completeVpnReservation };
+module.exports = { ageVpnInventory, getVpnPackages, getVpnPackage, saveVpnPackage, getVpnInventoryForAdmin, updateAvailableVpnUri, deleteAvailableVpnUri, reserveVpnUris, releaseVpnReservation, getVpnPurchasesForBot, completeVpnReservation };

@@ -41,7 +41,7 @@ const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { refreshScheduler, buildStatusJidList } = require('./scheduler');
 const { createApkStudioRoutes } = require('./apkStudio');
-const { getVpnPackages, saveVpnPackage } = require('../db/vpn');
+const { getVpnPackages, saveVpnPackage, getVpnInventoryForAdmin, updateAvailableVpnUri, deleteAvailableVpnUri } = require('../db/vpn');
 
 function layout(title, body) {
   return `
@@ -188,21 +188,43 @@ function createAdminRoutes() {
   router.get('/vpn', async (req, res) => {
     const packages = await getVpnPackages();
     const byDay = new Map(packages.map((p) => [Number(p.day), p]));
-    const forms = Array.from({ length: 7 }, (_, i) => {
+    const forms = await Promise.all(Array.from({ length: 7 }, async (_, i) => {
       const day = i + 1;
       const p = byDay.get(day) || {};
+      const inventory = await getVpnInventoryForAdmin(day);
+      const esc = (value) => String(value ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const uriRows = inventory.map((item) => `<div class="row" style="align-items:flex-start"><form method="POST" action="/admin/vpn/${day}/uri/update" style="flex:1;min-width:220px;margin:0"><input type="hidden" name="oldUri" value="${esc(item.uri)}"/><label>Available URI · uploaded ${item.created_at ? new Date(item.created_at).toLocaleString() : 'date unknown'}</label><input name="newUri" type="url" value="${esc(item.uri)}" required/><button type="submit">Update this URI</button></form><form method="POST" action="/admin/vpn/${day}/uri/delete" style="width:120px;margin:0" onsubmit="return confirm('Delete this available URI from stock?')"><input type="hidden" name="uri" value="${esc(item.uri)}"/><button class="danger" type="submit">Delete</button></form></div>`).join('') || '<p><small>No available URIs in this day.</small></p>';
       return `<div class="card"><h3>Day ${day}</h3>
         <form method="POST" action="/admin/vpn/${day}">
-          <label>Package title</label><input name="title" value="${String(p.title || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" placeholder="e.g. 1 Day VPN" required />
+          <label>Package title</label><input name="title" value="${esc(p.title || '')}" placeholder="e.g. 1 Day VPN" required />
           <label>Price (KES)</label><input name="amount" type="number" min="1" step="1" value="${p.amount || ''}" required />
-          <label>VPN URIs (one URI per line; each line is one stock item)</label><textarea name="uris" rows="5" placeholder="https://ehi.link/first\nhttps://ehi.link/second">${String((p.uris || []).join('\n')).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea><p><small>Available: ${Number(p.remaining || 0)} · Reserved: ${Number((p.inventory || {}).reserved || 0)} · Sold: ${Number((p.inventory || {}).sold || 0)}</small></p>
+          <label>Add new VPN URIs (one URI per line)</label><textarea name="uris" rows="4" placeholder="https://ehi.link/first\nhttps://ehi.link/second"></textarea><p><small>Available: ${Number(p.remaining || 0)} · Reserved: ${Number((p.inventory || {}).reserved || 0)} · Sold: ${Number((p.inventory || {}).sold || 0)}</small></p>
           <label><input name="active" type="checkbox" value="1" ${p.active === false ? '' : 'checked'} style="width:auto" /> Active / visible to users</label>
           <button type="submit">Save Day ${day}</button>
         </form>
+        <h4>Manage individual available URIs</h4>${uriRows}
         ${p.updated_at ? `<p><small>Last updated: ${new Date(p.updated_at).toLocaleString()}</small></p>` : '<p><small>Not configured yet.</small></p>'}
       </div>`;
-    }).join('');
-    res.send(layout('VPN Packages', `${nav()}<h2>VPN Packages</h2><p>Configure each day's title and price, then paste multiple VPN URIs (one per line). Each successful purchase consumes the requested number of URIs. Sold links are never added back automatically.</p>${forms}`));
+    })).then(rows => rows.join(''));
+    res.send(layout('VPN Packages', `${nav()}<h2>VPN Packages</h2><p>Add stock, update a wrongly entered URI, or delete an available URI. Editing a URI keeps its original upload time and 24-hour aging schedule. Sold or reserved URIs cannot be edited or deleted here.</p>${forms}`));
+  });
+
+  router.post('/vpn/:day/uri/update', async (req, res) => {
+    const day = Number(req.params.day);
+    const oldUri = String(req.body.oldUri || '').trim();
+    let newUri;
+    try { newUri = new URL(String(req.body.newUri || '').trim()); } catch (_) { return res.status(400).send(layout('Invalid VPN URI', `${nav()}<p>Enter a valid HTTP or HTTPS URI.</p><a href="/admin/vpn">Back</a>`)); }
+    if (!['http:', 'https:'].includes(newUri.protocol) || !oldUri || !Number.isInteger(day) || day < 1 || day > 7) return res.status(400).send(layout('Invalid VPN URI', `${nav()}<p>Check the URI and package day.</p><a href="/admin/vpn">Back</a>`));
+    const changed = await updateAvailableVpnUri({ day, oldUri, newUri: newUri.href });
+    return res.redirect('/admin/vpn?' + (changed ? 'updated=' : 'error=') + day);
+  });
+
+  router.post('/vpn/:day/uri/delete', async (req, res) => {
+    const day = Number(req.params.day);
+    const uri = String(req.body.uri || '').trim();
+    if (!uri || !Number.isInteger(day) || day < 1 || day > 7) return res.status(400).send(layout('Invalid VPN URI', `${nav()}<p>Check the URI and package day.</p><a href="/admin/vpn">Back</a>`));
+    const deleted = await deleteAvailableVpnUri({ day, uri });
+    return res.redirect('/admin/vpn?' + (deleted ? 'deleted=' : 'error=') + day);
   });
 
   router.post('/vpn/:day', async (req, res) => {
