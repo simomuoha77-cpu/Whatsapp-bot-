@@ -349,7 +349,7 @@ function createClientRoutes() {
       <div class="card">
         <h3>Message</h3>
         <textarea id="messageText" rows="5" maxlength="2000" placeholder="Write your message…"></textarea>
-        <p><small>Choose a recipient above, write your message, then use the send button. Every recipient requires a separate confirmation.</small></p>
+        <p><small>Select your recipients, write one message, then confirm once to send it to the selected contacts. Only message people who agreed to receive it.</small></p>
         <button type="button" id="sendSelected" disabled>Send message to selected contact</button>
         <p id="sendStatus" aria-live="polite"></p>
       </div>
@@ -397,7 +397,7 @@ function createClientRoutes() {
           const chosen=contacts.filter(c=>selected.has(c.phone));
           selectedSummary.textContent=chosen.length?chosen.map(c=>c.name+' ('+c.phone+')').join(' · '):'No contacts selected.';
           sendSelected.disabled=chosen.length===0;
-          sendSelected.textContent=chosen.length===1?'Send message to '+chosen[0].name:'Send message to '+chosen.length+' selected contacts';
+          sendSelected.textContent='Send to '+chosen.length+' selected contact'+(chosen.length===1?'':'s');
         }
         async function chooseContacts(){
           if(!waReady){status.textContent='WhatsApp is still reconnecting. Wait until the connection indicator turns green, then try again.';return;}
@@ -426,11 +426,11 @@ function createClientRoutes() {
           }catch(e){if(e.name==='AbortError')status.textContent='Contact selection cancelled.';else status.textContent=e.message||'Could not read selected phone contacts.';}
           finally{choose.disabled=false;choose.textContent='Choose contacts from phonebook';}
         }
-        async function sendOne(c){
+        async function sendOne(c, batchConfirmed=false){
           const message=document.getElementById('messageText').value.trim();
           if(!message){sendStatus.textContent='Write your message first.';return false;}
           if(!selected.has(c.phone)){sendStatus.textContent='Select this contact first.';return false;}
-          if(!confirm('Send this message to '+c.name+' ('+c.phone+')? Confirm they agreed to receive it.'))return false;
+          if(!batchConfirmed && !confirm('Send this message to '+c.name+' ('+c.phone+')? Confirm they agreed to receive it.'))return false;
           sendStatus.textContent='Sending to '+c.name+'…';
           try{const r=await fetch('/client/api/contact-messaging/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:c.phone,message,consent:true})});const d=await r.json();sendStatus.textContent=d.ok?'Message sent to '+c.name+'.':(d.error||'Message could not be sent.');return !!d.ok;}
           catch(e){sendStatus.textContent='Network error. Please try again.';return false;}
@@ -439,13 +439,14 @@ function createClientRoutes() {
           const chosen=contacts.filter(c=>selected.has(c.phone));
           if(!chosen.length){sendStatus.textContent='Select at least one recipient first.';return;}
           if(!document.getElementById('messageText').value.trim()){sendStatus.textContent='Write your message first.';return;}
+          if(!confirm('Send this message automatically to all '+chosen.length+' selected WhatsApp contacts? Continue only if these people agreed to receive it.'))return;
           sendSelected.disabled=true;
           let sent=0, skipped=0, failed=0;
           for(let i=0;i<chosen.length;i++){
             sendStatus.textContent='Recipient '+(i+1)+' of '+chosen.length+': '+chosen[i].name;
-            const ok=await sendOne(chosen[i]);
+            const ok=await sendOne(chosen[i],true);
             if(ok)sent++;else if(!selected.has(chosen[i].phone))skipped++;else failed++;
-            if(i<chosen.length-1 && ok)await new Promise(resolve=>setTimeout(resolve,3200));
+            if(i<chosen.length-1)await new Promise(resolve=>setTimeout(resolve,3200));
           }
           sendStatus.textContent='Finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped.';
           updateCount();
