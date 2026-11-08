@@ -96,6 +96,7 @@ async function startBotSocket(botId, slug, onReady) {
     pendingPairingNumber: null,
     slug,
     reconnectAttempts: 0,
+    shuttingDown: false,
   };
   activeBots.set(botId, entry);
 
@@ -261,6 +262,10 @@ async function startBotSocket(botId, slug, onReady) {
     }
 
     if (connection === 'close') {
+      // A process shutdown during deployment is not a WhatsApp logout.
+      // Do not mark the account disconnected or schedule reconnects from
+      // the old process; the new process restores the same DB credentials.
+      if (entry.shuttingDown) return;
       entry.status = 'disconnected';
       if (entry.presenceIntervalId) {
         clearInterval(entry.presenceIntervalId);
@@ -433,6 +438,9 @@ async function deleteBotSession(botId) {
 async function closeAllBotSockets() {
   for (const [botId, entry] of activeBots.entries()) {
     try {
+      entry.shuttingDown = true;
+      if (entry.presenceIntervalId) clearInterval(entry.presenceIntervalId);
+      if (entry.bioIntervalId) clearInterval(entry.bioIntervalId);
       entry.sock?.end(undefined);
     } catch (err) {
       logger.warn({ err, botId }, 'Error closing socket during shutdown');
