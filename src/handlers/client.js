@@ -343,12 +343,14 @@ function createClientRoutes() {
           <button type="button" id="clearAll" class="secondary" style="width:auto">Clear selection</button>
         </div>
         <p id="contactStatus" aria-live="polite">No phonebook contacts selected yet.</p>
+        <div id="selectedContacts" class="card" style="margin:8px 0;padding:12px"><strong>Selected recipients</strong><p id="selectedSummary">No contacts selected.</p></div>
         <div id="contactList" class="group-checklist" style="max-height:440px;overflow:auto"></div>
       </div>
       <div class="card">
         <h3>Message</h3>
         <textarea id="messageText" rows="5" maxlength="2000" placeholder="Write your message…"></textarea>
-        <p><small>Messages are sent one at a time after your confirmation. Only message people who have agreed to receive them.</small></p>
+        <p><small>Choose a recipient above, write your message, then use the send button. Every recipient requires a separate confirmation.</small></p>
+        <button type="button" id="sendSelected" disabled>Send message to selected contact</button>
         <p id="sendStatus" aria-live="polite"></p>
       </div>
       <script>
@@ -360,6 +362,8 @@ function createClientRoutes() {
         const choose=document.getElementById('choosePhoneContacts');
         const waPill=document.getElementById('waConnectionPill');
         const waDetail=document.getElementById('waConnectionDetail');
+        const selectedSummary=document.getElementById('selectedSummary');
+        const sendSelected=document.getElementById('sendSelected');
         let contacts=[];
         let waReady=${sock ? 'true' : 'false'};
         async function refreshConnection(){
@@ -388,7 +392,13 @@ function createClientRoutes() {
             row.querySelector('button').addEventListener('click',()=>sendOne(c));list.appendChild(row);
           });updateCount();
         }
-        function updateCount(){status.textContent=contacts.length+' verified WhatsApp contact(s) · '+selected.size+' selected';}
+        function updateCount(){
+          status.textContent=contacts.length+' verified WhatsApp contact(s) · '+selected.size+' selected';
+          const chosen=contacts.filter(c=>selected.has(c.phone));
+          selectedSummary.textContent=chosen.length?chosen.map(c=>c.name+' ('+c.phone+')').join(' · '):'No contacts selected.';
+          sendSelected.disabled=chosen.length!==1;
+          sendSelected.textContent=chosen.length===1?'Send message to '+chosen[0].name:(chosen.length>1?'Select one recipient to send':'Send message to selected contact');
+        }
         async function chooseContacts(){
           if(!waReady){status.textContent='WhatsApp is still reconnecting. Wait until the connection indicator turns green, then try again.';return;}
           if(!window.isSecureContext){status.textContent='Phonebook access requires a secure HTTPS page. Open this dashboard using its HTTPS address.';return;}
@@ -425,6 +435,11 @@ function createClientRoutes() {
           try{const r=await fetch('/client/api/contact-messaging/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:c.phone,message,consent:true})});const d=await r.json();sendStatus.textContent=d.ok?'Message sent to '+c.name+'.':(d.error||'Message could not be sent.');}
           catch(e){sendStatus.textContent='Network error. Please try again.';}
         }
+        sendSelected.addEventListener('click',()=>{
+          const chosen=contacts.filter(c=>selected.has(c.phone));
+          if(chosen.length!==1){sendStatus.textContent='Select exactly one recipient before sending. Each message is sent separately.';return;}
+          sendOne(chosen[0]);
+        });
         choose.addEventListener('click',chooseContacts);search.addEventListener('input',render);
         document.getElementById('selectAll').addEventListener('click',()=>{visible().forEach(c=>selected.add(c.phone));render();});
         document.getElementById('clearAll').addEventListener('click',()=>{selected.clear();render();});
