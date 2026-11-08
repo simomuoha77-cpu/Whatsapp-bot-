@@ -318,18 +318,23 @@ function createClientRoutes() {
   const contactMessageLastSent = new Map();
   const contactPickerSock = (botId) => {
     const live = getBotState(botId);
-    return live && live.sock && (live.status === 'connected' || live.sock.user?.id) ? live.sock : null;
+    // A persisted DB status is not proof of a usable socket. Require the
+    // in-process Baileys connection to be open and authenticated.
+    return live && live.sock && live.status === 'connected' && live.sock.user?.id ? live.sock : null;
   };
   router.get('/contact-messaging', (req, res) => {
     const botId = req.session.clientBotId;
+    // The dashboard can show a persisted CONNECTED state after a process
+    // restart. Ensure this web process has restored the actual socket too.
+    ensureSocket(botId);
     const sock = contactPickerSock(botId);
     res.send(layout('Contact Messaging', `
       <p><a href="/client/dashboard">← Back to dashboard</a></p>
       <h1>Contact Messaging</h1>
       <p>Choose contacts directly from your phonebook. We check each selected number against WhatsApp and display only registered WhatsApp numbers.</p>
       <div class="card">
-        <p><span class="pill ${sock ? 'on' : 'off'}">${sock ? 'WHATSAPP CONNECTED' : 'WHATSAPP NOT CONNECTED'}</span></p>
-        <p><small>${sock ? 'Connected account: ' + String(sock.user?.id || '').split(':')[0].split('@')[0] : 'The live WhatsApp session is not available to this server. Reconnect the bot and refresh this page.'}</small></p>
+        <p><span id="waConnectionPill" class="pill ${sock ? 'on' : 'off'}">${sock ? 'WHATSAPP CONNECTED' : 'CONNECTING TO WHATSAPP…'}</span></p>
+        <p><small id="waConnectionDetail">${sock ? 'Connected account: ' + String(sock.user?.id || '').split(':')[0].split('@')[0] : 'Restoring your linked WhatsApp session. This page will update automatically.'}</small></p>
         <button type="button" id="choosePhoneContacts" ${sock ? '' : 'disabled'}>Choose contacts from phonebook</button>
         <p><small>Android will ask you to choose contacts. Allow multiple selection, then we will filter out numbers that are not on WhatsApp. Your phonebook is not uploaded in full.</small></p>
         <input id="contactSearch" type="search" placeholder="Search verified WhatsApp contacts" autocomplete="off" />
@@ -353,7 +358,23 @@ function createClientRoutes() {
         const sendStatus=document.getElementById('sendStatus');
         const search=document.getElementById('contactSearch');
         const choose=document.getElementById('choosePhoneContacts');
+        const waPill=document.getElementById('waConnectionPill');
+        const waDetail=document.getElementById('waConnectionDetail');
         let contacts=[];
+        let waReady=${sock ? 'true' : 'false'};
+        async function refreshConnection(){
+          try{
+            const r=await fetch('/client/api/contact-messaging/status',{cache:'no-store',credentials:'same-origin'});
+            const d=await r.json();
+            waReady=!!(r.ok&&d.connected);
+            waPill.textContent=waReady?'WHATSAPP CONNECTED':(d.status==='connecting'?'CONNECTING TO WHATSAPP…':'WHATSAPP DISCONNECTED');
+            waPill.className='pill '+(waReady?'on':'off');
+            waDetail.textContent=waReady?('Connected account: '+(d.number||'linked WhatsApp account')):'Restoring the linked WhatsApp session. Keep this page open; it will retry automatically.';
+            choose.disabled=!waReady;
+          }catch(e){waReady=false;choose.disabled=true;waPill.textContent='CONNECTION CHECK FAILED';waPill.className='pill off';}
+        }
+        refreshConnection();
+        const connectionTimer=setInterval(()=>{if(!waReady)refreshConnection();else clearInterval(connectionTimer);},3000);
         const selected=new Set();
         const esc=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         function visible(){const q=search.value.trim().toLowerCase();return contacts.filter(c=>c.name.toLowerCase().includes(q)||c.phone.includes(q));}
@@ -369,7 +390,11 @@ function createClientRoutes() {
         }
         function updateCount(){status.textContent=contacts.length+' verified WhatsApp contact(s) · '+selected.size+' selected';}
         async function chooseContacts(){
-          if(!('contacts' in navigator)||!navigator.contacts?.select){status.textContent='Your browser does not support the Android Contact Picker. Open this page in Chrome on your Android phone over HTTPS.';return;}
+          if(!waReady){status.textContent='WhatsApp is still reconnecting. Wait until the connection indicator turns green, then try again.';return;}
+          if(!window.isSecureContext){status.textContent='Phonebook access requires a secure HTTPS page. Open this dashboard using its HTTPS address.';return;}
+          if(!navigator.contacts || typeof navigator.contacts.select!=='function'){
+            status.textContent='This browser does not provide Android Contact Picker access. Open this page in the latest Chrome on your Redmi, not inside an in-app browser.';return;
+          }
           try{
             choose.disabled=true;choose.textContent='Opening phonebook…';
             const picked=await navigator.contacts.select(['name','tel'],{multiple:true});
@@ -407,6 +432,23 @@ function createClientRoutes() {
       })();
       </script>
     `));
+  });
+
+  router.get('/api/contact-messaging/status', async (req, res) => {
+    const botId = Number(req.session.clientBotId);
+    let live = getBotState(botId);
+    if (!live) {
+      ensureSocket(botId);
+      live = getBotState(botId);
+    }
+    const sock = contactPickerSock(botId);
+    res.set('Cache-Control', 'no-store');
+    return res.json({
+      ok: true,
+      connected: !!sock,
+      status: sock ? 'connected' : (live?.status || 'connecting'),
+      number: sock ? String(sock.user?.id || '').split(':')[0].split('@')[0] : null,
+    });
   });
 
   router.post('/api/contact-messaging/verify-phonebook', express.json({ limit: '64kb' }), async (req, res) => {
