@@ -366,22 +366,11 @@ function createClientRoutes() {
         const selectedSummary=document.getElementById('selectedSummary');
         const sendSelected=document.getElementById('sendSelected');
         const resumeBatch=document.getElementById('resumeBatch');
-        const batchStorageKey='wa-contact-batch-'+${Number(botId)};
-        let sentPhones=new Set();
+        const messageText=document.getElementById('messageText');
         let contacts=[];
-        function persistBatch(){
-          try{localStorage.setItem(batchStorageKey,JSON.stringify({contacts,selected:[...selected],sentPhones:[...sentPhones],message:document.getElementById('messageText').value,updatedAt:Date.now()}));}catch(e){sendStatus.textContent='Could not save batch progress on this device.';}
-        }
-        function restoreBatch(){
-          try{const raw=localStorage.getItem(batchStorageKey);if(!raw)return;const saved=JSON.parse(raw);
-            if(!saved||!Array.isArray(saved.contacts))return;
-            contacts=saved.contacts.filter(c=>c&&typeof c.phone==='string'&&/^\d{8,15}$/.test(c.phone));
-            selected.clear();(saved.selected||[]).forEach(p=>selected.add(p));
-            sentPhones=new Set((saved.sentPhones||[]).filter(p=>typeof p==='string'));
-            if(saved.message)document.getElementById('messageText').value=saved.message;
-            if(sentPhones.size<contacts.length){resumeBatch.style.display='block';sendStatus.textContent='Saved batch restored: '+sentPhones.size+' sent, '+(contacts.length-sentPhones.size)+' remaining. Reconnect and tap Resume remaining messages.';}
-          }catch(e){localStorage.removeItem(batchStorageKey);}
-        }
+        let sentPhones=new Set();
+        let batchBusy=false;
+        let saveTimer=null;
         let waReady=${sock ? 'true' : 'false'};
         async function refreshConnection(){
           try{
@@ -399,6 +388,33 @@ function createClientRoutes() {
         const connectionTimer=setInterval(()=>{if(!waReady)refreshConnection();else clearInterval(connectionTimer);},3000);
         const selected=new Set();
         const esc=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        async function persistState(){
+          try{
+            await fetch('/client/api/contact-messaging/state',{method:'PUT',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+              contacts:contacts.slice(0,200),selectedPhones:[...selected],message:messageText.value.slice(0,2000),sentPhones:[...sentPhones].slice(0,200)
+            })});
+          }catch(e){sendStatus.textContent='Could not save contact selection yet. Keep this page open and retry.';}
+        }
+        function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(persistState,250);}
+        async function restoreState(){
+          try{
+            const r=await fetch('/client/api/contact-messaging/state',{cache:'no-store',credentials:'same-origin'});
+            if(!r.ok)return;
+            const d=await r.json();
+            if(!d.state)return;
+            contacts=Array.isArray(d.state.contacts)?d.state.contacts:[];
+            const allowed=new Set(contacts.map(c=>c.phone));
+            selected.clear();
+            // Restore the saved selection; for a previously auto-selected batch,
+            // the saved selectedPhones contains every verified recipient.
+            (Array.isArray(d.state.selectedPhones)?d.state.selectedPhones:contacts.map(c=>c.phone)).forEach(phone=>{if(allowed.has(phone))selected.add(phone);});
+            sentPhones=new Set(Array.isArray(d.state.sentPhones)?d.state.sentPhones.filter(phone=>allowed.has(phone)):[]);
+            messageText.value=String(d.state.message||'').slice(0,2000);
+            render();
+            if(contacts.length)status.textContent=contacts.length+' verified WhatsApp contact(s) restored · '+selected.size+' selected';
+            resumeBatch.style.display=sentPhones.size?'block':'none';
+          }catch(e){status.textContent='Could not restore the saved contact list. Please refresh once.';}
+        }
         function visible(){const q=search.value.trim().toLowerCase();return contacts.filter(c=>c.name.toLowerCase().includes(q)||c.phone.includes(q));}
         function render(){
           const rows=visible();list.innerHTML='';
@@ -406,13 +422,13 @@ function createClientRoutes() {
           rows.forEach(c=>{
             const row=document.createElement('div');row.className='group-check-row';
             row.innerHTML='<input type="checkbox" aria-label="Select '+esc(c.name)+'" '+(selected.has(c.phone)?'checked':'')+'><div style="min-width:0;flex:1"><strong>'+esc(c.name)+'</strong><br><small>'+esc(c.phone)+' · On WhatsApp</small></div><button type="button" class="secondary" style="width:auto;min-width:78px;margin:0">Send</button>';
-            row.querySelector('input').addEventListener('change',e=>{if(e.target.checked)selected.add(c.phone);else selected.delete(c.phone);updateCount();persistBatch();});
+            row.querySelector('input').addEventListener('change',e=>{if(e.target.checked)selected.add(c.phone);else selected.delete(c.phone);updateCount();scheduleSave();});
             row.querySelector('button').addEventListener('click',()=>sendOne(c));list.appendChild(row);
           });updateCount();
         }
         function updateCount(){
+          status.textContent=contacts.length+' verified WhatsApp contact(s) · '+selected.size+' selected';
           const chosen=contacts.filter(c=>selected.has(c.phone));
-          status.textContent=contacts.length+' verified WhatsApp contact(s) · '+chosen.length+' selected';
           selectedSummary.textContent=chosen.length?chosen.map(c=>c.name+' ('+c.phone+')').join(' · '):'No contacts selected.';
           sendSelected.disabled=chosen.length===0;
           sendSelected.textContent='Send to '+chosen.length+' selected contact'+(chosen.length===1?'':'s');
@@ -439,7 +455,7 @@ function createClientRoutes() {
             status.textContent='Checking '+candidates.length+' selected number(s) on WhatsApp…';
             const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:candidates})});
             const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
-            contacts=d.contacts||[];selected.clear();sentPhones.clear();contacts.forEach(c=>selected.add(c.phone));render();persistBatch();
+            contacts=d.contacts||[];selected.clear();contacts.forEach(c=>selected.add(c.phone));sentPhones.clear();render();await persistState();
             status.textContent=contacts.length+' of '+candidates.length+' selected contacts are on WhatsApp; all verified contacts are ticked automatically.';
           }catch(e){if(e.name==='AbortError')status.textContent='Contact selection cancelled.';else status.textContent=e.message||'Could not read selected phone contacts.';}
           finally{choose.disabled=false;choose.textContent='Choose contacts from phonebook';}
@@ -453,66 +469,89 @@ function createClientRoutes() {
           try{const r=await fetch('/client/api/contact-messaging/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:c.phone,message,consent:true})});const d=await r.json();sendStatus.textContent=d.ok?'Message sent to '+c.name+'.':(d.error||'Message could not be sent.');return !!d.ok;}
           catch(e){sendStatus.textContent='Network error. Please try again.';return false;}
         }
-        document.getElementById('messageText').addEventListener('input',persistBatch);
-        async function runBatch(resume=false){
+        async function runBatch(resuming=false){
+          if(batchBusy)return;
           const chosen=contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone));
-          if(!chosen.length){sendStatus.textContent=sentPhones.size?'No unsent selected contacts remain.':'Select at least one recipient first.';return;}
-          if(!document.getElementById('messageText').value.trim()){sendStatus.textContent='Write your message first.';return;}
-          if(!confirm((resume?'Resume':'Send')+' this message to '+chosen.length+' remaining selected WhatsApp contacts? Previously sent contacts will not be repeated. Continue only if these people agreed to receive it.'))return;
-          sendSelected.disabled=true;resumeBatch.disabled=true;persistBatch();
-          let sent=0, skipped=0, failed=0, stopped=false;
+          if(!chosen.length){sendStatus.textContent='No unsent selected contacts remain.';return;}
+          if(!messageText.value.trim()){sendStatus.textContent='Write your message first.';return;}
+          if(!confirm((resuming?'Resume sending to ':'Send this message to ')+chosen.length+' remaining selected WhatsApp contacts? Continue only if these people agreed to receive it.'))return;
+          batchBusy=true;sendSelected.disabled=true;resumeBatch.disabled=true;
+          await persistState();
+          let sent=0,failed=0,stopped=false;
           for(let i=0;i<chosen.length;i++){
-            // Check the real linked socket before each recipient. Never keep
-            // firing requests at a socket that has gone offline.
             if(!await refreshConnection()){
               stopped=true;
-              sendStatus.textContent='WhatsApp disconnected. Batch progress saved: '+(sentPhones.size)+' sent, '+(contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone)).length)+' remaining. Reconnect, then tap Resume remaining messages.';
+              sendStatus.textContent='WhatsApp disconnected. Progress saved: '+sentPhones.size+' sent, '+(chosen.length-i)+' remaining. Reconnect and resume.';
               break;
             }
             sendStatus.textContent='Recipient '+(i+1)+' of '+chosen.length+': '+chosen[i].name;
             const ok=await sendOne(chosen[i],true);
-            if(ok){sent++;sentPhones.add(chosen[i].phone);persistBatch();}else if(!selected.has(chosen[i].phone))skipped++;else failed++;
-            // Conservative pacing reduces bursts. Add a longer rest after
-            // every 10 successful messages; this cannot override WhatsApp
-            // rate limits or guarantee that WhatsApp keeps a session online.
+            if(ok){sent++;sentPhones.add(chosen[i].phone);await persistState();}
+            else failed++;
             if(i<chosen.length-1){
-              if(sent>0 && sent%10===0){
-                sendStatus.textContent='Taking a short sending pause to keep traffic steady…';
-                await new Promise(resolve=>setTimeout(resolve,60000));
-              } else {
-                await new Promise(resolve=>setTimeout(resolve,8000));
-              }
+              await new Promise(resolve=>setTimeout(resolve,8000));
             }
           }
-          if(!stopped){sendStatus.textContent='Batch pass finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped. '+contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone)).length+' remain unsent.';}
-          updateCount();persistBatch();
-          resumeBatch.style.display=contacts.some(c=>selected.has(c.phone)&&!sentPhones.has(c.phone))?'block':'none';
-          resumeBatch.disabled=false;
-          await refreshConnection();
+          if(!stopped)sendStatus.textContent='Batch progress saved: '+sentPhones.size+' sent, '+contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone)).length+' remaining, '+failed+' failed this run.';
+          resumeBatch.style.display=sentPhones.size?'block':'none';
+          batchBusy=false;sendSelected.disabled=false;resumeBatch.disabled=false;
+          updateCount();await refreshConnection();
         }
         sendSelected.addEventListener('click',()=>runBatch(false));
         resumeBatch.addEventListener('click',()=>runBatch(true));
+        messageText.addEventListener('input',scheduleSave);
         choose.addEventListener('click',chooseContacts);search.addEventListener('input',render);
-        // Keep the selection Set as the single source of truth. Select All
-        // always replaces the current selection with every verified contact;
-        // Clear All empties it. Rendering then synchronizes every checkbox,
-        // the selected summary/count, and the batch-send button.
-        function setAllContactsSelected(checked){
-          selected.clear();
-          if(checked){
-            contacts.forEach(c=>{
-              if(c && typeof c.phone==='string' && c.phone)selected.add(c.phone);
-            });
-          }
-          render();persistBatch();
-        }
-        document.getElementById('selectAll').addEventListener('click',()=>setAllContactsSelected(true));
-        document.getElementById('clearAll').addEventListener('click',()=>setAllContactsSelected(false));
-        restoreBatch();
+        document.getElementById('selectAll').addEventListener('click',()=>{contacts.forEach(c=>selected.add(c.phone));render();scheduleSave();});
+        document.getElementById('clearAll').addEventListener('click',()=>{selected.clear();render();scheduleSave();});
         render();
+        restoreState();
       })();
       </script>
     `));
+  });
+
+  // Store the verified phonebook and batch progress in MongoDB, keyed to the
+  // authenticated client's bot. This survives browser logout and deployments.
+  router.get('/api/contact-messaging/state', async (req, res) => {
+    try {
+      const botId = Number(req.session.clientBotId);
+      const db = await getDb();
+      const state = await db.collection('client_contact_message_state').findOne({ bot_id: botId }, { projection: { _id: 0, bot_id: 0 } });
+      res.set('Cache-Control', 'no-store');
+      return res.json({ ok: true, state: state || null });
+    } catch (err) {
+      logger.error({ err: err && err.message }, 'Could not restore client contact-message state');
+      return res.status(500).json({ ok: false, error: 'Could not restore saved contacts.' });
+    }
+  });
+
+  router.put('/api/contact-messaging/state', express.json({ limit: '256kb' }), async (req, res) => {
+    try {
+      const botId = Number(req.session.clientBotId);
+      const inputContacts = Array.isArray(req.body.contacts) ? req.body.contacts.slice(0, 200) : [];
+      const contacts = [];
+      const seen = new Set();
+      for (const item of inputContacts) {
+        const phone = normalizePhoneNumber(String(item && item.phone || ''));
+        if (!/^\d{8,15}$/.test(phone) || seen.has(phone)) continue;
+        seen.add(phone);
+        contacts.push({ phone, name: String(item && item.name || phone).trim().slice(0, 100) || phone, jid: String(item && item.jid || `${phone}@s.whatsapp.net`).slice(0, 120) });
+      }
+      const validPhones = new Set(contacts.map(c => c.phone));
+      const selectedPhones = [...new Set((Array.isArray(req.body.selectedPhones) ? req.body.selectedPhones : []).map(v => normalizePhoneNumber(String(v))).filter(v => validPhones.has(v)))];
+      const sentPhones = [...new Set((Array.isArray(req.body.sentPhones) ? req.body.sentPhones : []).map(v => normalizePhoneNumber(String(v))).filter(v => validPhones.has(v)))];
+      const message = String(req.body.message || '').slice(0, 2000);
+      const db = await getDb();
+      await db.collection('client_contact_message_state').updateOne(
+        { bot_id: botId },
+        { $set: { bot_id: botId, contacts, selectedPhones, sentPhones, message, updated_at: new Date() } },
+        { upsert: true }
+      );
+      return res.json({ ok: true, saved: contacts.length, selected: selectedPhones.length, sent: sentPhones.length });
+    } catch (err) {
+      logger.error({ err: err && err.message }, 'Could not save client contact-message state');
+      return res.status(500).json({ ok: false, error: 'Could not save selected contacts.' });
+    }
   });
 
   router.get('/api/contact-messaging/status', async (req, res) => {
