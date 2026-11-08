@@ -375,7 +375,8 @@ function createClientRoutes() {
             waPill.className='pill '+(waReady?'on':'off');
             waDetail.textContent=waReady?('Connected account: '+(d.number||'linked WhatsApp account')):'Restoring the linked WhatsApp session. Keep this page open; it will retry automatically.';
             choose.disabled=!waReady;
-          }catch(e){waReady=false;choose.disabled=true;waPill.textContent='CONNECTION CHECK FAILED';waPill.className='pill off';}
+            return waReady;
+          }catch(e){waReady=false;choose.disabled=true;waPill.textContent='CONNECTION CHECK FAILED';waPill.className='pill off';return false;}
         }
         refreshConnection();
         const connectionTimer=setInterval(()=>{if(!waReady)refreshConnection();else clearInterval(connectionTimer);},3000);
@@ -441,15 +442,33 @@ function createClientRoutes() {
           if(!document.getElementById('messageText').value.trim()){sendStatus.textContent='Write your message first.';return;}
           if(!confirm('Send this message automatically to all '+chosen.length+' selected WhatsApp contacts? Continue only if these people agreed to receive it.'))return;
           sendSelected.disabled=true;
-          let sent=0, skipped=0, failed=0;
+          let sent=0, skipped=0, failed=0, stopped=false;
           for(let i=0;i<chosen.length;i++){
+            // Check the real linked socket before each recipient. Never keep
+            // firing requests at a socket that has gone offline.
+            if(!await refreshConnection()){
+              stopped=true;
+              sendStatus.textContent='WhatsApp disconnected. Batch paused safely: '+sent+' sent, '+(chosen.length-i)+' remaining. Reconnect, then start a new batch for the remaining contacts.';
+              break;
+            }
             sendStatus.textContent='Recipient '+(i+1)+' of '+chosen.length+': '+chosen[i].name;
             const ok=await sendOne(chosen[i],true);
             if(ok)sent++;else if(!selected.has(chosen[i].phone))skipped++;else failed++;
-            if(i<chosen.length-1)await new Promise(resolve=>setTimeout(resolve,3200));
+            // Conservative pacing reduces bursts. Add a longer rest after
+            // every 10 successful messages; this cannot override WhatsApp
+            // rate limits or guarantee that WhatsApp keeps a session online.
+            if(i<chosen.length-1){
+              if(sent>0 && sent%10===0){
+                sendStatus.textContent='Taking a short sending pause to keep traffic steady…';
+                await new Promise(resolve=>setTimeout(resolve,60000));
+              } else {
+                await new Promise(resolve=>setTimeout(resolve,8000));
+              }
+            }
           }
-          sendStatus.textContent='Finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped.';
+          if(!stopped)sendStatus.textContent='Finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped.';
           updateCount();
+          await refreshConnection();
         });
         choose.addEventListener('click',chooseContacts);search.addEventListener('input',render);
         document.getElementById('selectAll').addEventListener('click',()=>{contacts.forEach(c=>selected.add(c.phone));render();});
