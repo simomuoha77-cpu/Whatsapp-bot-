@@ -331,15 +331,15 @@ function createClientRoutes() {
     res.send(layout('Contact Messaging', `
       <p><a href="/client/dashboard">← Back to dashboard</a></p>
       <h1>Contact Messaging</h1>
-      <p>Choose contacts directly from your phonebook. We check each selected number against WhatsApp and display only registered WhatsApp numbers.</p>
+      <p>Choose multiple contacts from your phonebook in one picker session. We automatically verify them, show only numbers registered on WhatsApp, and tick all verified contacts for you. You can untick any contact you want to exclude.</p>
       <div class="card">
         <p><span id="waConnectionPill" class="pill ${sock ? 'on' : 'off'}">${sock ? 'WHATSAPP CONNECTED' : 'CONNECTING TO WHATSAPP…'}</span></p>
         <p><small id="waConnectionDetail">${sock ? 'Connected account: ' + String(sock.user?.id || '').split(':')[0].split('@')[0] : 'Restoring your linked WhatsApp session. This page will update automatically.'}</small></p>
         <button type="button" id="choosePhoneContacts" ${sock ? '' : 'disabled'}>Choose contacts from phonebook</button>
-        <p><small>Android will ask you to choose contacts. Allow multiple selection, then we will filter out numbers that are not on WhatsApp. Your phonebook is not uploaded in full.</small></p>
+        <p><small>In the Android picker, select multiple contacts before tapping Done. The picker itself is controlled by Android; if it has no Select all button, select contacts using its multi-select option. Only the contacts you choose are checked.</small></p>
         <input id="contactSearch" type="search" placeholder="Search verified WhatsApp contacts" autocomplete="off" />
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button type="button" id="selectAll" class="secondary" style="width:auto">Select visible</button>
+          <button type="button" id="selectAll" class="secondary" style="width:auto">Select all verified</button>
           <button type="button" id="clearAll" class="secondary" style="width:auto">Clear selection</button>
         </div>
         <p id="contactStatus" aria-live="polite">No phonebook contacts selected yet.</p>
@@ -349,7 +349,7 @@ function createClientRoutes() {
       <div class="card">
         <h3>Message</h3>
         <textarea id="messageText" rows="5" maxlength="2000" placeholder="Write your message…"></textarea>
-        <p><small>Select your recipients, write one message, then confirm once to send it to the selected contacts. Only message people who agreed to receive it.</small></p>
+        <p><small>All verified WhatsApp contacts are ticked automatically. Untick anyone you want to exclude, write your message, then confirm the batch once. Only message people who agreed to receive it.</small></p>
         <button type="button" id="sendSelected" disabled>Send message to selected contact</button>
         <p id="sendStatus" aria-live="polite"></p>
       </div>
@@ -421,8 +421,8 @@ function createClientRoutes() {
             status.textContent='Checking '+candidates.length+' selected number(s) on WhatsApp…';
             const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:candidates})});
             const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
-            contacts=d.contacts||[];selected.clear();render();
-            status.textContent=contacts.length+' of '+candidates.length+' selected contacts are on WhatsApp.';
+            contacts=d.contacts||[];selected.clear();contacts.forEach(c=>selected.add(c.phone));render();
+            status.textContent=contacts.length+' of '+candidates.length+' selected contacts are on WhatsApp; all verified contacts are ticked automatically.';
           }catch(e){if(e.name==='AbortError')status.textContent='Contact selection cancelled.';else status.textContent=e.message||'Could not read selected phone contacts.';}
           finally{choose.disabled=false;choose.textContent='Choose contacts from phonebook';}
         }
@@ -452,7 +452,7 @@ function createClientRoutes() {
           updateCount();
         });
         choose.addEventListener('click',chooseContacts);search.addEventListener('input',render);
-        document.getElementById('selectAll').addEventListener('click',()=>{visible().forEach(c=>selected.add(c.phone));render();});
+        document.getElementById('selectAll').addEventListener('click',()=>{contacts.forEach(c=>selected.add(c.phone));render();});
         document.getElementById('clearAll').addEventListener('click',()=>{selected.clear();render();});
         render();
       })();
