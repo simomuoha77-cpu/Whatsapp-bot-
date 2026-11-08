@@ -310,34 +310,40 @@ function createClientRoutes() {
   };
   const liveSock = (botId) => { const l = getBotState(botId); return l && l.sock && l.status === 'connected' ? l.sock : null; };
 
-  // Contact messaging uses the bot's own recorded one-to-one WhatsApp chats.
-  // Only recipients with at least one outgoing message are listed; no phonebook
-  // file upload or arbitrary-number discovery is required.
+  // Contact messaging: browser requests a user-selected set of phonebook
+  // contacts through Android's native Contact Picker API. The server then
+  // checks each number with the linked WhatsApp account and returns only
+  // numbers registered on WhatsApp. A website cannot silently read the
+  // entire Android address book; the user must invoke and approve the picker.
   const contactMessageLastSent = new Map();
+  const contactPickerSock = (botId) => {
+    const live = getBotState(botId);
+    return live && live.sock && (live.status === 'connected' || live.sock.user?.id) ? live.sock : null;
+  };
   router.get('/contact-messaging', (req, res) => {
     const botId = req.session.clientBotId;
-    const live = getBotState(botId);
-    const connected = !!(live && live.sock && live.status === 'connected');
+    const sock = contactPickerSock(botId);
     res.send(layout('Contact Messaging', `
       <p><a href="/client/dashboard">← Back to dashboard</a></p>
       <h1>Contact Messaging</h1>
-      <p>Contacts are loaded automatically from one-to-one WhatsApp chats where this linked account has sent at least one message. No file import is needed.</p>
+      <p>Choose contacts directly from your phonebook. We check each selected number against WhatsApp and display only registered WhatsApp numbers.</p>
       <div class="card">
-        <p><span class="pill ${connected ? 'on' : 'off'}">${connected ? 'WHATSAPP CONNECTED' : 'WHATSAPP NOT CONNECTED'}</span></p>
-        <p><small>${connected ? 'Messages will be sent from the WhatsApp account currently linked to this bot.' : 'Connect WhatsApp before sending messages.'}</small></p>
-        <input id="contactSearch" type="search" placeholder="Search name or phone number" autocomplete="off" />
+        <p><span class="pill ${sock ? 'on' : 'off'}">${sock ? 'WHATSAPP CONNECTED' : 'WHATSAPP NOT CONNECTED'}</span></p>
+        <p><small>${sock ? 'Connected account: ' + String(sock.user?.id || '').split(':')[0].split('@')[0] : 'The live WhatsApp session is not available to this server. Reconnect the bot and refresh this page.'}</small></p>
+        <button type="button" id="choosePhoneContacts" ${sock ? '' : 'disabled'}>Choose contacts from phonebook</button>
+        <p><small>Android will ask you to choose contacts. Allow multiple selection, then we will filter out numbers that are not on WhatsApp. Your phonebook is not uploaded in full.</small></p>
+        <input id="contactSearch" type="search" placeholder="Search verified WhatsApp contacts" autocomplete="off" />
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button type="button" id="refreshContacts" class="secondary" style="width:auto">Refresh contacts</button>
           <button type="button" id="selectAll" class="secondary" style="width:auto">Select visible</button>
           <button type="button" id="clearAll" class="secondary" style="width:auto">Clear selection</button>
         </div>
-        <p id="contactStatus" aria-live="polite">Loading your WhatsApp chats…</p>
+        <p id="contactStatus" aria-live="polite">No phonebook contacts selected yet.</p>
         <div id="contactList" class="group-checklist" style="max-height:440px;overflow:auto"></div>
       </div>
       <div class="card">
         <h3>Message</h3>
         <textarea id="messageText" rows="5" maxlength="2000" placeholder="Write your message…"></textarea>
-        <p><small>Each recipient is handled individually. Only message people who have agreed to receive it. Confirm before every send.</small></p>
+        <p><small>Messages are sent one at a time after your confirmation. Only message people who have agreed to receive them.</small></p>
         <p id="sendStatus" aria-live="polite"></p>
       </div>
       <script>
@@ -346,68 +352,86 @@ function createClientRoutes() {
         const status=document.getElementById('contactStatus');
         const sendStatus=document.getElementById('sendStatus');
         const search=document.getElementById('contactSearch');
+        const choose=document.getElementById('choosePhoneContacts');
         let contacts=[];
         const selected=new Set();
         const esc=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-        function visible(){const q=search.value.trim().toLowerCase();return contacts.filter(c=>!q||c.name.toLowerCase().includes(q)||c.phone.includes(q));}
+        function visible(){const q=search.value.trim().toLowerCase();return contacts.filter(c=>c.name.toLowerCase().includes(q)||c.phone.includes(q));}
         function render(){
-          const rows=visible(); list.innerHTML='';
-          if(!rows.length){list.innerHTML='<p style="padding:12px">No matching WhatsApp chats found.</p>';}
+          const rows=visible();list.innerHTML='';
+          if(!rows.length){list.innerHTML='<p style="padding:12px">No verified WhatsApp contacts. Choose contacts from your phonebook first.</p>';}
           rows.forEach(c=>{
             const row=document.createElement('div');row.className='group-check-row';
-            row.innerHTML='<input type="checkbox" aria-label="Select '+esc(c.name)+'" '+(selected.has(c.jid)?'checked':'')+'><div style="min-width:0;flex:1"><strong>'+esc(c.name)+'</strong><br><small>'+esc(c.phone)+'</small></div><button type="button" style="width:auto;min-width:78px;margin:0">Send</button>';
-            row.querySelector('input').addEventListener('change',e=>{if(e.target.checked)selected.add(c.jid);else selected.delete(c.jid);updateCount();});
-            row.querySelector('button').addEventListener('click',()=>sendOne(c));
-            list.appendChild(row);
-          });
-          updateCount();
+            row.innerHTML='<input type="checkbox" aria-label="Select '+esc(c.name)+'" '+(selected.has(c.phone)?'checked':'')+'><div style="min-width:0;flex:1"><strong>'+esc(c.name)+'</strong><br><small>'+esc(c.phone)+' · On WhatsApp</small></div><button type="button" class="secondary" style="width:auto;min-width:78px;margin:0">Send</button>';
+            row.querySelector('input').addEventListener('change',e=>{if(e.target.checked)selected.add(c.phone);else selected.delete(c.phone);updateCount();});
+            row.querySelector('button').addEventListener('click',()=>sendOne(c));list.appendChild(row);
+          });updateCount();
         }
-        function updateCount(){status.textContent=contacts.length+' WhatsApp chat(s) found · '+selected.size+' selected';}
-        async function load(){
-          status.textContent='Loading your WhatsApp chats…';
-          try{const r=await fetch('/client/api/contact-messaging/contacts');const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not load chats');contacts=d.contacts||[];const valid=new Set(contacts.map(c=>c.jid));for(const jid of selected)if(!valid.has(jid))selected.delete(jid);render();}
-          catch(e){status.textContent=e.message||'Could not load chats. Check that WhatsApp is connected.';}
+        function updateCount(){status.textContent=contacts.length+' verified WhatsApp contact(s) · '+selected.size+' selected';}
+        async function chooseContacts(){
+          if(!('contacts' in navigator)||!navigator.contacts?.select){status.textContent='Your browser does not support the Android Contact Picker. Open this page in Chrome on your Android phone over HTTPS.';return;}
+          try{
+            choose.disabled=true;choose.textContent='Opening phonebook…';
+            const picked=await navigator.contacts.select(['name','tel'],{multiple:true});
+            const unique=new Map();
+            for(const item of picked){
+              const name=(item.name||[]).find(Boolean)||'';
+              for(const raw of (item.tel||[])){
+                const phone=String(raw||'').replace(/[^\\d+]/g,'').replace(/^\\+/,'');
+                if(/^\d{8,15}$/.test(phone))unique.set(phone,{name:name||phone,phone});
+              }
+            }
+            const candidates=[...unique.values()];
+            if(!candidates.length){status.textContent='No valid phone numbers were selected.';return;}
+            status.textContent='Checking '+candidates.length+' selected number(s) on WhatsApp…';
+            const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:candidates})});
+            const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
+            contacts=d.contacts||[];selected.clear();render();
+            status.textContent=contacts.length+' of '+candidates.length+' selected contacts are on WhatsApp.';
+          }catch(e){if(e.name==='AbortError')status.textContent='Contact selection cancelled.';else status.textContent=e.message||'Could not read selected phone contacts.';}
+          finally{choose.disabled=false;choose.textContent='Choose contacts from phonebook';}
         }
         async function sendOne(c){
           const message=document.getElementById('messageText').value.trim();
           if(!message){sendStatus.textContent='Write your message first.';return;}
-          if(!selected.has(c.jid)){sendStatus.textContent='Select this contact first.';return;}
+          if(!selected.has(c.phone)){sendStatus.textContent='Select this contact first.';return;}
           if(!confirm('Send this message to '+c.name+' ('+c.phone+')? Confirm they agreed to receive it.'))return;
           sendStatus.textContent='Sending to '+c.name+'…';
           try{const r=await fetch('/client/api/contact-messaging/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:c.phone,message,consent:true})});const d=await r.json();sendStatus.textContent=d.ok?'Message sent to '+c.name+'.':(d.error||'Message could not be sent.');}
           catch(e){sendStatus.textContent='Network error. Please try again.';}
         }
-        search.addEventListener('input',render);
-        document.getElementById('refreshContacts').addEventListener('click',load);
-        document.getElementById('selectAll').addEventListener('click',()=>{visible().forEach(c=>selected.add(c.jid));render();});
+        choose.addEventListener('click',chooseContacts);search.addEventListener('input',render);
+        document.getElementById('selectAll').addEventListener('click',()=>{visible().forEach(c=>selected.add(c.phone));render();});
         document.getElementById('clearAll').addEventListener('click',()=>{selected.clear();render();});
-        load();
+        render();
       })();
       </script>
     `));
   });
 
-  router.get('/api/contact-messaging/contacts', async (req, res) => {
-    try {
-      const db = await getDb();
-      const rows = await db.collection('messages').aggregate([
-        { $match: { bot_id: Number(req.session.clientBotId), direction: 'outgoing', jid: { $regex: /@s\.whatsapp\.net$/ } } },
-        { $sort: { created_at: -1 } },
-        { $group: { _id: '$jid', last_message_at: { $first: '$created_at' } } },
-        { $sort: { last_message_at: -1 } },
-        { $limit: 500 },
-        { $lookup: { from: 'contacts', let: { jid: '$_id', botId: Number(req.session.clientBotId) }, pipeline: [ { $match: { $expr: { $and: [ { $eq: ['$jid', '$$jid'] }, { $eq: ['$bot_id', '$$botId'] } ] } } }, { $project: { display_name: 1, _id: 0 } }, { $limit: 1 } ], as: 'contact' } },
-        { $project: { jid: '$_id', name: { $arrayElemAt: ['$contact.display_name', 0] } } },
-      ]).toArray();
-      const contacts = rows.map((row) => {
-        const phone = String(row.jid || '').split('@')[0].split(':')[0];
-        return { jid: row.jid, phone, name: row.name || phone };
-      }).filter((c) => /^\d{8,15}$/.test(c.phone));
-      return res.json({ ok: true, contacts, source: 'outgoing_chat_history' });
-    } catch (err) {
-      logger.warn({ err: err && err.message, botId: req.session.clientBotId }, 'Failed to load WhatsApp chat contacts');
-      return res.status(500).json({ ok: false, error: 'Could not load WhatsApp chat contacts. Please refresh and try again.' });
+  router.post('/api/contact-messaging/verify-phonebook', express.json({ limit: '64kb' }), async (req, res) => {
+    const sock = contactPickerSock(req.session.clientBotId);
+    if (!sock) return res.status(409).json({ ok: false, error: 'WhatsApp is not connected to this server. Reconnect it from your dashboard.' });
+    const input = Array.isArray(req.body.contacts) ? req.body.contacts.slice(0, 200) : [];
+    if (!input.length) return res.status(400).json({ ok: false, error: 'Choose at least one phone contact.' });
+    const unique = new Map();
+    for (const item of input) {
+      const phone = String(item && item.phone || '').replace(/\D/g, '');
+      const name = String(item && item.name || '').trim().slice(0, 100);
+      if (/^\d{8,15}$/.test(phone) && !unique.has(phone)) unique.set(phone, { phone, name: name || phone });
     }
+    if (!unique.size) return res.status(400).json({ ok: false, error: 'No valid phone numbers were found in the selected contacts.' });
+    const verified = [];
+    for (const contact of unique.values()) {
+      try {
+        const result = await sock.onWhatsApp(contact.phone);
+        const match = Array.isArray(result) ? result.find((entry) => entry.exists && entry.jid) : null;
+        if (match) verified.push({ name: contact.name, phone: contact.phone, jid: match.jid });
+      } catch (err) {
+        logger.warn({ botId: req.session.clientBotId, phone: contact.phone, err: err && err.message }, 'Phonebook WhatsApp lookup failed');
+      }
+    }
+    return res.json({ ok: true, contacts: verified, checked: unique.size, source: 'android_contact_picker_whatsapp_verified' });
   });
 
   router.post('/api/contact-messaging/send', express.json({ limit: '8kb' }), async (req, res) => {
@@ -418,16 +442,18 @@ function createClientRoutes() {
     if (!/^\d{8,15}$/.test(phone)) return res.status(400).json({ ok: false, error: 'Enter a valid international phone number.' });
     if (!message || message.length > 2000) return res.status(400).json({ ok: false, error: 'Message must contain 1–2000 characters.' });
     const live = getBotState(botId);
-    if (!live || !live.sock || live.status !== 'connected') return res.status(409).json({ ok: false, error: 'WhatsApp is not connected. Reconnect it from your dashboard.' });
+    const sock = contactPickerSock(botId);
+    if (!sock) return res.status(409).json({ ok: false, error: 'WhatsApp is not connected to this server. Reconnect it from your dashboard.' });
     const last = contactMessageLastSent.get(botId) || 0;
     if (Date.now() - last < 3000) return res.status(429).json({ ok: false, error: 'Please wait a few seconds before sending another message.' });
     try {
       const jid = `${phone}@s.whatsapp.net`;
-      const result = await live.sock.onWhatsApp(phone);
-      if (!Array.isArray(result) || !result.some((entry) => entry.exists)) {
+      const result = await sock.onWhatsApp(phone);
+      const match = Array.isArray(result) ? result.find((entry) => entry.exists && entry.jid) : null;
+      if (!match) {
         return res.status(404).json({ ok: false, error: 'This number is not available on WhatsApp.' });
       }
-      await live.sock.sendMessage(jid, { text: message });
+      await sock.sendMessage(match.jid || jid, { text: message });
       contactMessageLastSent.set(botId, Date.now());
       logger.info({ botId, recipient: phone }, 'Client sent an individual consent-confirmed contact message');
       return res.json({ ok: true });
