@@ -1,0 +1,95 @@
+[1mdiff --git a/src/handlers/client.js b/src/handlers/client.js[m
+[1mindex f3e9c5a..9006e20 100644[m
+[1m--- a/src/handlers/client.js[m
+[1m+++ b/src/handlers/client.js[m
+[36m@@ -195,8 +195,60 @@[m [mfunction layout(title, body, extraHead = '') {[m
+ // it's flipped — no separate "Toggle" button needed, feels like a real[m
+ // settings screen instead of a form you have to remember to submit.[m
+ const TOGGLE_AUTOSUBMIT_JS = `<script>[m
+[31m-  document.querySelectorAll('.switch input').forEach(function(el) {[m
+[31m-    el.addEventListener('change', function() { el.closest('form').submit(); });[m
+[32m+[m[32m  // Feature switches save in the background. Do not submit the form normally,[m
+[32m+[m[32m  // because a page navigation/reload interrupts the dashboard experience.[m
+[32m+[m[32m  document.querySelectorAll('.switch input[name="enabled"]').forEach(function(el) {[m
+[32m+[m[32m    el.addEventListener('change', async function() {[m
+[32m+[m[32m      const input = this;[m
+[32m+[m[32m      const form = input.closest('form');[m
+[32m+[m[32m      if (!form) return;[m
+[32m+[m[32m      if (!/\/settings\/toggle(?:$|\?)/.test(form.action)) {[m
+[32m+[m[32m        form.submit();[m
+[32m+[m[32m        return;[m
+[32m+[m[32m      }[m
+[32m+[m[32m      if (input.dataset.saving === '1') return;[m
+[32m+[m
+[32m+[m[32m      const previousValue = !input.checked;[m
+[32m+[m[32m      input.dataset.saving = '1';[m
+[32m+[m[32m      input.disabled = true;[m
+[32m+[m[32m      input.setAttribute('aria-busy', 'true');[m
+[32m+[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        const body = new URLSearchParams();[m
+[32m+[m[32m        const feature = form.querySelector('input[name="feature"]');[m
+[32m+[m[32m        if (!feature) throw new Error('Missing feature name');[m
+[32m+[m[32m        body.set('feature', feature.value);[m
+[32m+[m[32m        body.set('enabled', input.checked ? '1' : '0');[m
+[32m+[m
+[32m+[m[32m        const response = await fetch(form.action, {[m
+[32m+[m[32m          method: 'POST',[m
+[32m+[m[32m          headers: {[m
+[32m+[m[32m            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',[m
+[32m+[m[32m            'X-Requested-With': 'XMLHttpRequest',[m
+[32m+[m[32m            'Accept': 'application/json'[m
+[32m+[m[32m          },[m
+[32m+[m[32m          body: body.toString(),[m
+[32m+[m[32m          credentials: 'same-origin'[m
+[32m+[m[32m        });[m
+[32m+[m[32m        if (!response.ok) throw new Error('Could not save setting');[m
+[32m+[m[32m        const result = await response.json();[m
+[32m+[m[32m        if (!result || result.ok !== true) throw new Error('Could not save setting');[m
+[32m+[m[32m      } catch (err) {[m
+[32m+[m[32m        input.checked = previousValue;[m
+[32m+[m[32m        let status = form.querySelector('.toggle-save-status');[m
+[32m+[m[32m        if (!status) {[m
+[32m+[m[32m          status = document.createElement('small');[m
+[32m+[m[32m          status.className = 'toggle-save-status';[m
+[32m+[m[32m          status.style.cssText = 'display:block;color:#f87171;margin-top:4px';[m
+[32m+[m[32m          form.closest('.row').appendChild(status);[m
+[32m+[m[32m        }[m
+[32m+[m[32m        status.textContent = 'Could not save. Check your connection and try again.';[m
+[32m+[m[32m      } finally {[m
+[32m+[m[32m        input.disabled = false;[m
+[32m+[m[32m        input.removeAttribute('aria-busy');[m
+[32m+[m[32m        delete input.dataset.saving;[m
+[32m+[m[32m      }[m
+[32m+[m[32m    });[m
+   });[m
+ </script>`;[m
+ [m
+[36m@@ -939,12 +991,22 @@[m [mfunction createClientRoutes() {[m
+   router.post('/settings/toggle', async (req, res) => {[m
+     const botId = req.session.clientBotId;[m
+     const feature = req.body.feature;[m
+[31m-    if (FEATURE_COLUMNS.includes(feature)) {[m
+[31m-      // A real checkbox only submits its field when checked — unchecked[m
+[31m-      // simply omits "enabled" from the form body. So presence = on.[m
+[31m-      await setFeature(botId, feature, req.body.enabled === '1');[m
+[32m+[m[32m    if (!FEATURE_COLUMNS.includes(feature)) {[m
+[32m+[m[32m      if (req.get('X-Requested-With') === 'XMLHttpRequest') {[m
+[32m+[m[32m        return res.status(400).json({ ok: false, error: 'Invalid feature' });[m
+[32m+[m[32m      }[m
+[32m+[m[32m      return res.redirect('/client/dashboard');[m
+     }[m
+[31m-    res.redirect('/client/dashboard');[m
+[32m+[m
+[32m+[m[32m    const enabled = req.body.enabled === '1';[m
+[32m+[m[32m    await setFeature(botId, feature, enabled);[m
+[32m+[m
+[32m+[m[32m    // AJAX toggle requests receive JSON so the dashboard stays on the same[m
+[32m+[m[32m    // page and the browser address bar never navigates to the POST endpoint.[m
+[32m+[m[32m    if (req.get('X-Requested-With') === 'XMLHttpRequest') {[m
+[32m+[m[32m      return res.json({ ok: true, feature, enabled });[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return res.redirect('/client/dashboard');[m
+   });[m
+ [m
+   router.post('/settings/stealth-mode', async (req, res) => {[m
