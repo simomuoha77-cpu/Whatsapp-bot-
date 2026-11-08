@@ -396,8 +396,8 @@ function createClientRoutes() {
           status.textContent=contacts.length+' verified WhatsApp contact(s) · '+selected.size+' selected';
           const chosen=contacts.filter(c=>selected.has(c.phone));
           selectedSummary.textContent=chosen.length?chosen.map(c=>c.name+' ('+c.phone+')').join(' · '):'No contacts selected.';
-          sendSelected.disabled=chosen.length!==1;
-          sendSelected.textContent=chosen.length===1?'Send message to '+chosen[0].name:(chosen.length>1?'Select one recipient to send':'Send message to selected contact');
+          sendSelected.disabled=chosen.length===0;
+          sendSelected.textContent=chosen.length===1?'Send message to '+chosen[0].name:'Send message to '+chosen.length+' selected contacts';
         }
         async function chooseContacts(){
           if(!waReady){status.textContent='WhatsApp is still reconnecting. Wait until the connection indicator turns green, then try again.';return;}
@@ -413,7 +413,7 @@ function createClientRoutes() {
               const name=(item.name||[]).find(Boolean)||'';
               for(const raw of (item.tel||[])){
                 const phone=String(raw||'').replace(/[^\\d+]/g,'').replace(/^\\+/,'');
-                if(/^\d{8,15}$/.test(phone))unique.set(phone,{name:name||phone,phone});
+                if(/^\\d{8,15}$/.test(phone))unique.set(phone,{name:name||phone,phone});
               }
             }
             const candidates=[...unique.values()];
@@ -428,17 +428,27 @@ function createClientRoutes() {
         }
         async function sendOne(c){
           const message=document.getElementById('messageText').value.trim();
-          if(!message){sendStatus.textContent='Write your message first.';return;}
-          if(!selected.has(c.phone)){sendStatus.textContent='Select this contact first.';return;}
-          if(!confirm('Send this message to '+c.name+' ('+c.phone+')? Confirm they agreed to receive it.'))return;
+          if(!message){sendStatus.textContent='Write your message first.';return false;}
+          if(!selected.has(c.phone)){sendStatus.textContent='Select this contact first.';return false;}
+          if(!confirm('Send this message to '+c.name+' ('+c.phone+')? Confirm they agreed to receive it.'))return false;
           sendStatus.textContent='Sending to '+c.name+'…';
-          try{const r=await fetch('/client/api/contact-messaging/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:c.phone,message,consent:true})});const d=await r.json();sendStatus.textContent=d.ok?'Message sent to '+c.name+'.':(d.error||'Message could not be sent.');}
-          catch(e){sendStatus.textContent='Network error. Please try again.';}
+          try{const r=await fetch('/client/api/contact-messaging/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:c.phone,message,consent:true})});const d=await r.json();sendStatus.textContent=d.ok?'Message sent to '+c.name+'.':(d.error||'Message could not be sent.');return !!d.ok;}
+          catch(e){sendStatus.textContent='Network error. Please try again.';return false;}
         }
-        sendSelected.addEventListener('click',()=>{
+        sendSelected.addEventListener('click',async()=>{
           const chosen=contacts.filter(c=>selected.has(c.phone));
-          if(chosen.length!==1){sendStatus.textContent='Select exactly one recipient before sending. Each message is sent separately.';return;}
-          sendOne(chosen[0]);
+          if(!chosen.length){sendStatus.textContent='Select at least one recipient first.';return;}
+          if(!document.getElementById('messageText').value.trim()){sendStatus.textContent='Write your message first.';return;}
+          sendSelected.disabled=true;
+          let sent=0, skipped=0, failed=0;
+          for(let i=0;i<chosen.length;i++){
+            sendStatus.textContent='Recipient '+(i+1)+' of '+chosen.length+': '+chosen[i].name;
+            const ok=await sendOne(chosen[i]);
+            if(ok)sent++;else if(!selected.has(chosen[i].phone))skipped++;else failed++;
+            if(i<chosen.length-1 && ok)await new Promise(resolve=>setTimeout(resolve,3200));
+          }
+          sendStatus.textContent='Finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped.';
+          updateCount();
         });
         choose.addEventListener('click',chooseContacts);search.addEventListener('input',render);
         document.getElementById('selectAll').addEventListener('click',()=>{visible().forEach(c=>selected.add(c.phone));render();});
@@ -473,7 +483,8 @@ function createClientRoutes() {
     if (!input.length) return res.status(400).json({ ok: false, error: 'Choose at least one phone contact.' });
     const unique = new Map();
     for (const item of input) {
-      const phone = String(item && item.phone || '').replace(/\D/g, '');
+      const rawPhone = String(item && item.phone || '').replace(/\D/g, '');
+      const phone = normalizePhoneNumber(rawPhone);
       const name = String(item && item.name || '').trim().slice(0, 100);
       if (/^\d{8,15}$/.test(phone) && !unique.has(phone)) unique.set(phone, { phone, name: name || phone });
     }
