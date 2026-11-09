@@ -250,7 +250,3 @@ Platform admins can open `/admin/vpn` and configure up to seven separate package
 Clients see a **VPN** tab in `/client/dashboard`. They choose a package, enter an M-Pesa number, and receive an STK Push. The URI is saved as a purchase entitlement and is shown only after Daraja's successful payment callback is received. The VPN tab then provides **Copy URI** and **Open URI** actions. Deactivating a package hides it from new purchases but does not remove links already purchased by clients.
 
 The VPN shop uses the same Daraja credentials and callback endpoint as client subscriptions; no separate payment credentials are required. Configure the existing `DARAJA_CONSUMER_KEY`, `DARAJA_CONSUMER_SECRET`, `DARAJA_SHORTCODE`, `DARAJA_PASSKEY`, and public callback URL as described above.
-
-## Contact announcement helper (normal WhatsApp)
-
-Open `tools/contact-announcement.html` in a browser on your phone. Export your Redmi contacts from the Contacts app as a `.vcf`/vCard file, import that file into the helper, select the people you want to notify, enter your new number in international format (for Kenya, start with `254`), and prepare the individual WhatsApp chat links. Each link opens one chat with the announcement prefilled; you must review and tap **Send** in WhatsApp. The helper does not upload your address book or send messages automatically.
