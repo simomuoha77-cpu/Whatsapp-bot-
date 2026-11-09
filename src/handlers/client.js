@@ -336,6 +336,8 @@ function createClientRoutes() {
         <p><span id="waConnectionPill" class="pill ${sock ? 'on' : 'off'}">${sock ? 'WHATSAPP CONNECTED' : 'CONNECTING TO WHATSAPP…'}</span></p>
         <p><small id="waConnectionDetail">${sock ? 'Connected account: ' + String(sock.user?.id || '').split(':')[0].split('@')[0] : 'Restoring your linked WhatsApp session. This page will update automatically.'}</small></p>
         <button type="button" id="choosePhoneContacts" ${sock ? '' : 'disabled'}>Choose contacts from phonebook</button>
+        <input id="phonebookVcf" type="file" accept=".vcf,text/vcard" hidden />
+        <p><small>If this browser cannot open the phonebook directly, export your contacts from the Android Contacts app as a .vcf file and choose it here. CSV files are not used.</small></p>
         <input id="contactSearch" type="search" placeholder="Search verified WhatsApp contacts" autocomplete="off" />
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button type="button" id="selectAll" class="secondary" style="width:auto">Select all verified</button>
@@ -350,7 +352,6 @@ function createClientRoutes() {
         <textarea id="messageText" rows="5" maxlength="2000" placeholder="Write your message…"></textarea>
         <p><small>All verified WhatsApp contacts are ticked automatically. Untick anyone you want to exclude, write your message, then confirm the batch once. Only message people who agreed to receive it.</small></p>
         <button type="button" id="sendSelected" disabled>Send message to selected contact</button>
-        <button type="button" id="resumeBatch" class="secondary" style="display:none;margin-top:8px">Resume remaining messages</button>
         <p id="sendStatus" aria-live="polite"></p>
       </div>
       <script>
@@ -364,23 +365,7 @@ function createClientRoutes() {
         const waDetail=document.getElementById('waConnectionDetail');
         const selectedSummary=document.getElementById('selectedSummary');
         const sendSelected=document.getElementById('sendSelected');
-        const resumeBatch=document.getElementById('resumeBatch');
-        const batchStorageKey='wa-contact-batch-'+${Number(botId)};
-        let sentPhones=new Set();
         let contacts=[];
-        function persistBatch(){
-          try{localStorage.setItem(batchStorageKey,JSON.stringify({contacts,selected:[...selected],sentPhones:[...sentPhones],message:document.getElementById('messageText').value,updatedAt:Date.now()}));}catch(e){sendStatus.textContent='Could not save batch progress on this device.';}
-        }
-        function restoreBatch(){
-          try{const raw=localStorage.getItem(batchStorageKey);if(!raw)return;const saved=JSON.parse(raw);
-            if(!saved||!Array.isArray(saved.contacts))return;
-            contacts=saved.contacts.filter(c=>c&&typeof c.phone==='string'&&/^\d{8,15}$/.test(c.phone));
-            selected.clear();(saved.selected||[]).forEach(p=>selected.add(p));
-            sentPhones=new Set((saved.sentPhones||[]).filter(p=>typeof p==='string'));
-            if(saved.message)document.getElementById('messageText').value=saved.message;
-            if(sentPhones.size<contacts.length){resumeBatch.style.display='block';sendStatus.textContent='Saved batch restored: '+sentPhones.size+' sent, '+(contacts.length-sentPhones.size)+' remaining. Reconnect and tap Resume remaining messages.';}
-          }catch(e){localStorage.removeItem(batchStorageKey);}
-        }
         let waReady=${sock ? 'true' : 'false'};
         async function refreshConnection(){
           try{
@@ -405,34 +390,23 @@ function createClientRoutes() {
           rows.forEach(c=>{
             const row=document.createElement('div');row.className='group-check-row';
             row.innerHTML='<input type="checkbox" aria-label="Select '+esc(c.name)+'" '+(selected.has(c.phone)?'checked':'')+'><div style="min-width:0;flex:1"><strong>'+esc(c.name)+'</strong><br><small>'+esc(c.phone)+' · On WhatsApp</small></div><button type="button" class="secondary" style="width:auto;min-width:78px;margin:0">Send</button>';
-            row.querySelector('input').addEventListener('change',e=>{if(e.target.checked)selected.add(c.phone);else selected.delete(c.phone);updateCount();persistBatch();});
+            row.querySelector('input').addEventListener('change',e=>{if(e.target.checked)selected.add(c.phone);else selected.delete(c.phone);updateCount();});
             row.querySelector('button').addEventListener('click',()=>sendOne(c));list.appendChild(row);
           });updateCount();
         }
         function updateCount(){
+          status.textContent=contacts.length+' verified WhatsApp contact(s) · '+selected.size+' selected';
           const chosen=contacts.filter(c=>selected.has(c.phone));
-          status.textContent=contacts.length+' verified WhatsApp contact(s) · '+chosen.length+' selected';
           selectedSummary.textContent=chosen.length?chosen.map(c=>c.name+' ('+c.phone+')').join(' · '):'No contacts selected.';
           sendSelected.disabled=chosen.length===0;
           sendSelected.textContent='Send to '+chosen.length+' selected contact'+(chosen.length===1?'':'s');
-        }
-        async function verifyPhonebookContacts(candidates){
-          const unique=new Map();
-          for(const c of candidates){const phone=String(c.phone||'').replace(/[^\d+]/g,'').replace(/^\+/,'');if(/^\d{8,15}$/.test(phone))unique.set(phone,{name:String(c.name||phone).trim()||phone,phone});}
-          const clean=[...unique.values()];
-          if(!clean.length)throw new Error('No valid phone numbers found in the selected phonebook contacts.');
-          if(clean.length>1000)throw new Error('Please select no more than 1,000 phonebook contacts at a time.');
-          status.textContent='Checking '+clean.length+' selected phonebook number(s) on WhatsApp…';
-          const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:clean})});
-          const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
-          contacts=d.contacts||[];selected.clear();sentPhones.clear();contacts.forEach(c=>selected.add(c.phone));render();persistBatch();
-          status.textContent=contacts.length+' of '+clean.length+' selected phonebook contacts are on WhatsApp. All verified contacts are selected automatically.';
         }
         async function chooseContacts(){
           if(!waReady){status.textContent='WhatsApp is still reconnecting. Wait until the connection indicator turns green, then try again.';return;}
           if(!window.isSecureContext){status.textContent='Phonebook access requires a secure HTTPS page. Open this dashboard using its HTTPS address.';return;}
           if(!navigator.contacts || typeof navigator.contacts.select!=='function'){
-            status.textContent='This browser does not provide Android Contact Picker access. Open this page in the latest Chrome on your Redmi, not inside an in-app browser.';return;
+            status.textContent='Direct phonebook access is not supported by this browser. Choose an exported Android phonebook (.vcf) file instead.';
+            document.getElementById('phonebookVcf').click();return;
           }
           try{
             choose.disabled=true;choose.textContent='Opening phonebook…';
@@ -441,16 +415,52 @@ function createClientRoutes() {
             for(const item of picked){
               const name=(item.name||[]).find(Boolean)||'';
               for(const raw of (item.tel||[])){
-                const phone=String(raw||'').replace(/[^\d+]/g,'').replace(/^\\+/,'');
+                const phone=String(raw||'').replace(/[^\\d+]/g,'').replace(/^\\+/,'');
                 if(/^\\d{8,15}$/.test(phone))unique.set(phone,{name:name||phone,phone});
               }
             }
             const candidates=[...unique.values()];
             if(!candidates.length){status.textContent='No valid phone numbers were selected.';return;}
-            await verifyPhonebookContacts(candidates);
+            status.textContent='Checking '+candidates.length+' selected number(s) on WhatsApp…';
+            const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:candidates})});
+            const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
+            contacts=d.contacts||[];selected.clear();contacts.forEach(c=>selected.add(c.phone));render();
+            status.textContent=contacts.length+' of '+candidates.length+' selected contacts are on WhatsApp; all verified contacts are ticked automatically.';
           }catch(e){if(e.name==='AbortError')status.textContent='Contact selection cancelled.';else status.textContent=e.message||'Could not read selected phone contacts.';}
           finally{choose.disabled=false;choose.textContent='Choose contacts from phonebook';}
         }
+        async function importPhonebookVcf(file){
+          if(!file)return;
+          if(!/\.vcf$/i.test(file.name)){status.textContent='Please choose an Android phonebook .vcf file.';return;}
+          if(file.size>5*1024*1024){status.textContent='Phonebook file is too large. Export a smaller group of contacts.';return;}
+          try{
+            status.textContent='Reading phonebook contacts…';
+            let raw=await file.text();
+            raw=raw.replace(/\r?\n[ \t]/g,'');
+            const blocks=raw.split(/BEGIN:VCARD/i).slice(1);
+            const candidates=[];
+            for(const block of blocks){
+              const card=block.split(/END:VCARD/i)[0]||'';
+              const nameLine=card.split(/\r?\n/).find(line=>/^FN(?:;[^:]*)?:/i.test(line)||/^N(?:;[^:]*)?:/i.test(line));
+              let name=nameLine?nameLine.slice(nameLine.indexOf(':')+1).trim().replace(/\\[nN]/g,' '):'';
+              if(nameLine&&/^N(?:;[^:]*)?:/i.test(nameLine)&&name.includes(';'))name=name.split(';').filter(Boolean).reverse().join(' ');
+              const telLines=card.split(/\r?\n/).filter(line=>/^TEL(?:;[^:]*)?:/i.test(line));
+              for(const line of telLines){
+                const rawPhone=line.slice(line.indexOf(':')+1).replace(/[^\d+]/g,'').replace(/^\+/,'');
+                if(/^\d{8,15}$/.test(rawPhone))candidates.push({name:name||rawPhone,phone:rawPhone});
+              }
+            }
+            const unique=[...new Map(candidates.map(c=>[c.phone,c])).values()];
+            if(!unique.length){status.textContent='No valid phone numbers were found in that phonebook file.';return;}
+            if(unique.length>200){status.textContent='This page can verify up to 200 phonebook contacts at a time. Export/select a smaller group.';return;}
+            status.textContent='Checking '+unique.length+' phonebook contacts on WhatsApp…';
+            const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:unique})});
+            const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify phonebook contacts');
+            contacts=d.contacts||[];selected.clear();contacts.forEach(c=>selected.add(c.phone));render();
+            status.textContent=contacts.length+' of '+unique.length+' phonebook contacts are on WhatsApp. All verified contacts are selected.';
+          }catch(e){status.textContent=e.message||'Could not read the phonebook file.';}
+        }
+        document.getElementById('phonebookVcf').addEventListener('change',e=>importPhonebookVcf(e.target.files&&e.target.files[0]));
         async function sendOne(c, batchConfirmed=false){
           const message=document.getElementById('messageText').value.trim();
           if(!message){sendStatus.textContent='Write your message first.';return false;}
@@ -460,25 +470,24 @@ function createClientRoutes() {
           try{const r=await fetch('/client/api/contact-messaging/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:c.phone,message,consent:true})});const d=await r.json();sendStatus.textContent=d.ok?'Message sent to '+c.name+'.':(d.error||'Message could not be sent.');return !!d.ok;}
           catch(e){sendStatus.textContent='Network error. Please try again.';return false;}
         }
-        document.getElementById('messageText').addEventListener('input',persistBatch);
-        async function runBatch(resume=false){
-          const chosen=contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone));
-          if(!chosen.length){sendStatus.textContent=sentPhones.size?'No unsent selected contacts remain.':'Select at least one recipient first.';return;}
+        sendSelected.addEventListener('click',async()=>{
+          const chosen=contacts.filter(c=>selected.has(c.phone));
+          if(!chosen.length){sendStatus.textContent='Select at least one recipient first.';return;}
           if(!document.getElementById('messageText').value.trim()){sendStatus.textContent='Write your message first.';return;}
-          if(!confirm((resume?'Resume':'Send')+' this message to '+chosen.length+' remaining selected WhatsApp contacts? Previously sent contacts will not be repeated. Continue only if these people agreed to receive it.'))return;
-          sendSelected.disabled=true;resumeBatch.disabled=true;persistBatch();
+          if(!confirm('Send this message automatically to all '+chosen.length+' selected WhatsApp contacts? Continue only if these people agreed to receive it.'))return;
+          sendSelected.disabled=true;
           let sent=0, skipped=0, failed=0, stopped=false;
           for(let i=0;i<chosen.length;i++){
             // Check the real linked socket before each recipient. Never keep
             // firing requests at a socket that has gone offline.
             if(!await refreshConnection()){
               stopped=true;
-              sendStatus.textContent='WhatsApp disconnected. Batch progress saved: '+(sentPhones.size)+' sent, '+(contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone)).length)+' remaining. Reconnect, then tap Resume remaining messages.';
+              sendStatus.textContent='WhatsApp disconnected. Batch paused safely: '+sent+' sent, '+(chosen.length-i)+' remaining. Reconnect, then start a new batch for the remaining contacts.';
               break;
             }
             sendStatus.textContent='Recipient '+(i+1)+' of '+chosen.length+': '+chosen[i].name;
             const ok=await sendOne(chosen[i],true);
-            if(ok){sent++;sentPhones.add(chosen[i].phone);persistBatch();}else if(!selected.has(chosen[i].phone))skipped++;else failed++;
+            if(ok)sent++;else if(!selected.has(chosen[i].phone))skipped++;else failed++;
             // Conservative pacing reduces bursts. Add a longer rest after
             // every 10 successful messages; this cannot override WhatsApp
             // rate limits or guarantee that WhatsApp keeps a session online.
@@ -491,31 +500,13 @@ function createClientRoutes() {
               }
             }
           }
-          if(!stopped){sendStatus.textContent='Batch pass finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped. '+contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone)).length+' remain unsent.';}
-          updateCount();persistBatch();
-          resumeBatch.style.display=contacts.some(c=>selected.has(c.phone)&&!sentPhones.has(c.phone))?'block':'none';
-          resumeBatch.disabled=false;
+          if(!stopped)sendStatus.textContent='Finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped.';
+          updateCount();
           await refreshConnection();
-        }
-        sendSelected.addEventListener('click',()=>runBatch(false));
-        resumeBatch.addEventListener('click',()=>runBatch(true));
+        });
         choose.addEventListener('click',chooseContacts);search.addEventListener('input',render);
-        // Keep the selection Set as the single source of truth. Select All
-        // always replaces the current selection with every verified contact;
-        // Clear All empties it. Rendering then synchronizes every checkbox,
-        // the selected summary/count, and the batch-send button.
-        function setAllContactsSelected(checked){
-          selected.clear();
-          if(checked){
-            contacts.forEach(c=>{
-              if(c && typeof c.phone==='string' && c.phone)selected.add(c.phone);
-            });
-          }
-          render();persistBatch();
-        }
-        document.getElementById('selectAll').addEventListener('click',()=>setAllContactsSelected(true));
-        document.getElementById('clearAll').addEventListener('click',()=>setAllContactsSelected(false));
-        restoreBatch();
+        document.getElementById('selectAll').addEventListener('click',()=>{contacts.forEach(c=>selected.add(c.phone));render();});
+        document.getElementById('clearAll').addEventListener('click',()=>{selected.clear();render();});
         render();
       })();
       </script>
@@ -539,10 +530,10 @@ function createClientRoutes() {
     });
   });
 
-  router.post('/api/contact-messaging/verify-phonebook', express.json({ limit: '512kb' }), async (req, res) => {
+  router.post('/api/contact-messaging/verify-phonebook', express.json({ limit: '64kb' }), async (req, res) => {
     const sock = contactPickerSock(req.session.clientBotId);
     if (!sock) return res.status(409).json({ ok: false, error: 'WhatsApp is not connected to this server. Reconnect it from your dashboard.' });
-    const input = Array.isArray(req.body.contacts) ? req.body.contacts.slice(0, 1000) : [];
+    const input = Array.isArray(req.body.contacts) ? req.body.contacts.slice(0, 200) : [];
     if (!input.length) return res.status(400).json({ ok: false, error: 'Choose at least one phone contact.' });
     const unique = new Map();
     for (const item of input) {
