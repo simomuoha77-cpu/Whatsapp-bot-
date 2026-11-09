@@ -336,11 +336,6 @@ function createClientRoutes() {
         <p><span id="waConnectionPill" class="pill ${sock ? 'on' : 'off'}">${sock ? 'WHATSAPP CONNECTED' : 'CONNECTING TO WHATSAPP…'}</span></p>
         <p><small id="waConnectionDetail">${sock ? 'Connected account: ' + String(sock.user?.id || '').split(':')[0].split('@')[0] : 'Restoring your linked WhatsApp session. This page will update automatically.'}</small></p>
         <button type="button" id="choosePhoneContacts" ${sock ? '' : 'disabled'}>Choose contacts from phonebook</button>
-        <p><small>Or import your phonebook file below. Export contacts from your Android Contacts app as a .vcf file, or use a .csv file. Imported contacts are checked against WhatsApp before they appear here.</small></p>
-        <label for="contactFile"><strong>Import contacts (.VCF or .CSV)</strong></label>
-        <input id="contactFile" type="file" accept=".vcf,.vcard,.csv,text/vcard,text/csv" />
-        <button type="button" id="importContacts" class="secondary" style="width:auto" disabled>Import and verify contacts</button>
-        <p><small>After verification, tap “Select all verified” to select every imported WhatsApp contact.</small></p>
         <input id="contactSearch" type="search" placeholder="Search verified WhatsApp contacts" autocomplete="off" />
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button type="button" id="selectAll" class="secondary" style="width:auto">Select all verified</button>
@@ -365,8 +360,6 @@ function createClientRoutes() {
         const sendStatus=document.getElementById('sendStatus');
         const search=document.getElementById('contactSearch');
         const choose=document.getElementById('choosePhoneContacts');
-        const contactFile=document.getElementById('contactFile');
-        const importButton=document.getElementById('importContacts');
         const waPill=document.getElementById('waConnectionPill');
         const waDetail=document.getElementById('waConnectionDetail');
         const selectedSummary=document.getElementById('selectedSummary');
@@ -423,65 +416,18 @@ function createClientRoutes() {
           sendSelected.disabled=chosen.length===0;
           sendSelected.textContent='Send to '+chosen.length+' selected contact'+(chosen.length===1?'':'s');
         }
-        function parseCsv(text){
-          const rows=[];let row=[],field='',quoted=false;
-          for(let i=0;i<text.length;i++){
-            const ch=text[i];
-            if(quoted){if(ch==='"'&&text[i+1]==='"'){field+='"';i++;}else if(ch==='"')quoted=false;else field+=ch;}
-            else if(ch==='"')quoted=true;
-            else if(ch===','){row.push(field);field='';}
-            else if(ch==='\n'){row.push(field);rows.push(row);row=[];field='';}
-            else if(ch!=='\r')field+=ch;
-          }
-          if(field.length||row.length){row.push(field);rows.push(row);}
-          return rows;
-        }
-        function parseVcard(text){
-          const unfolded=text.replace(/\r?\n[ \t]/g,'');
-          const cards=unfolded.split(/BEGIN:VCARD/i).slice(1);const out=[];
-          for(const card of cards){
-            let name='';const phones=[];
-            for(const line of card.split(/\r?\n/)){
-              const colon=line.indexOf(':');if(colon<0)continue;
-              const property=line.slice(0,colon).split(';')[0].toUpperCase();
-              const value=line.slice(colon+1).trim();
-              if(property==='FN')name=value;
-              if(property==='TEL'&&value)phones.push(value);
-            }
-            for(const phone of phones)out.push({name:name||phone,phone});
-          }
-          return out;
-        }
-        function parseImportedContacts(filename,text){
-          if(/\.(vcf|vcard)$/i.test(filename)||/BEGIN:VCARD/i.test(text.slice(0,500)))return parseVcard(text);
-          const rows=parseCsv(text);if(rows.length<1)return [];
-          const headers=rows[0].map(v=>v.trim().toLowerCase());
-          const phoneIndex=headers.findIndex(v=>/^(phone|phone number|mobile|mobile number|telephone|tel|number)$/.test(v));
-          const nameIndex=headers.findIndex(v=>/^(name|full name|contact name|display name)$/.test(v));
-          const start=(phoneIndex>=0||nameIndex>=0)?1:0;const pi=phoneIndex>=0?phoneIndex:(rows[0].length>1?1:0);const ni=nameIndex>=0?nameIndex:0;
-          return rows.slice(start).map(r=>({name:(r[ni]||r[pi]||'').trim(),phone:(r[pi]||'').trim()})).filter(c=>c.phone);
-        }
-        async function verifyImported(candidates){
+        async function verifyPhonebookContacts(candidates){
           const unique=new Map();
           for(const c of candidates){const phone=String(c.phone||'').replace(/[^\d+]/g,'').replace(/^\+/,'');if(/^\d{8,15}$/.test(phone))unique.set(phone,{name:String(c.name||phone).trim()||phone,phone});}
           const clean=[...unique.values()];
-          if(!clean.length)throw new Error('No valid phone numbers found in that file.');
-          if(clean.length>1000)throw new Error('This file contains '+clean.length+' valid numbers. Please import no more than 1,000 at a time.');
-          status.textContent='Checking '+clean.length+' imported number(s) on WhatsApp…';
+          if(!clean.length)throw new Error('No valid phone numbers found in the selected phonebook contacts.');
+          if(clean.length>1000)throw new Error('Please select no more than 1,000 phonebook contacts at a time.');
+          status.textContent='Checking '+clean.length+' selected phonebook number(s) on WhatsApp…';
           const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:clean})});
           const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
           contacts=d.contacts||[];selected.clear();sentPhones.clear();contacts.forEach(c=>selected.add(c.phone));render();persistBatch();
-          status.textContent=contacts.length+' of '+clean.length+' imported contacts are on WhatsApp. All verified contacts are selected automatically.';
+          status.textContent=contacts.length+' of '+clean.length+' selected phonebook contacts are on WhatsApp. All verified contacts are selected automatically.';
         }
-        contactFile.addEventListener('change',()=>{importButton.disabled=!contactFile.files||!contactFile.files.length;});
-        importButton.addEventListener('click',async()=>{
-          if(!waReady){status.textContent='Wait until WhatsApp is connected before importing and verifying contacts.';return;}
-          const file=contactFile.files&&contactFile.files[0];if(!file)return;
-          importButton.disabled=true;importButton.textContent='Reading contacts…';
-          try{const parsed=parseImportedContacts(file.name,await file.text());await verifyImported(parsed);}
-          catch(e){status.textContent=e.message||'Could not import this contacts file.';}
-          finally{importButton.disabled=false;importButton.textContent='Import and verify contacts';}
-        });
         async function chooseContacts(){
           if(!waReady){status.textContent='WhatsApp is still reconnecting. Wait until the connection indicator turns green, then try again.';return;}
           if(!window.isSecureContext){status.textContent='Phonebook access requires a secure HTTPS page. Open this dashboard using its HTTPS address.';return;}
@@ -495,13 +441,13 @@ function createClientRoutes() {
             for(const item of picked){
               const name=(item.name||[]).find(Boolean)||'';
               for(const raw of (item.tel||[])){
-                const phone=String(raw||'').replace(/[^\\d+]/g,'').replace(/^\\+/,'');
+                const phone=String(raw||'').replace(/[^\d+]/g,'').replace(/^\\+/,'');
                 if(/^\\d{8,15}$/.test(phone))unique.set(phone,{name:name||phone,phone});
               }
             }
             const candidates=[...unique.values()];
             if(!candidates.length){status.textContent='No valid phone numbers were selected.';return;}
-            await verifyImported(candidates);
+            await verifyPhonebookContacts(candidates);
           }catch(e){if(e.name==='AbortError')status.textContent='Contact selection cancelled.';else status.textContent=e.message||'Could not read selected phone contacts.';}
           finally{choose.disabled=false;choose.textContent='Choose contacts from phonebook';}
         }
