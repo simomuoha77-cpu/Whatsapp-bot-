@@ -351,6 +351,7 @@ function createClientRoutes() {
         <textarea id="messageText" rows="5" maxlength="2000" placeholder="Write your message…"></textarea>
         <p><small>All verified WhatsApp contacts are ticked automatically. Untick anyone you want to exclude, write your message, then confirm the batch once. Only message people who agreed to receive it.</small></p>
         <button type="button" id="sendSelected" disabled>Send message to selected contact</button>
+        <button type="button" id="resumeBatch" class="secondary" style="display:none;margin-top:8px">Resume remaining messages</button>
         <p id="sendStatus" aria-live="polite"></p>
       </div>
       <script>
@@ -364,7 +365,23 @@ function createClientRoutes() {
         const waDetail=document.getElementById('waConnectionDetail');
         const selectedSummary=document.getElementById('selectedSummary');
         const sendSelected=document.getElementById('sendSelected');
+        const resumeBatch=document.getElementById('resumeBatch');
+        const batchStorageKey='wa-contact-batch-'+${Number(botId)};
+        let sentPhones=new Set();
         let contacts=[];
+        function persistBatch(){
+          try{localStorage.setItem(batchStorageKey,JSON.stringify({contacts,selected:[...selected],sentPhones:[...sentPhones],message:document.getElementById('messageText').value,updatedAt:Date.now()}));}catch(e){sendStatus.textContent='Could not save batch progress on this device.';}
+        }
+        function restoreBatch(){
+          try{const raw=localStorage.getItem(batchStorageKey);if(!raw)return;const saved=JSON.parse(raw);
+            if(!saved||!Array.isArray(saved.contacts))return;
+            contacts=saved.contacts.filter(c=>c&&typeof c.phone==='string'&&/^\d{8,15}$/.test(c.phone));
+            selected.clear();(saved.selected||[]).forEach(p=>selected.add(p));
+            sentPhones=new Set((saved.sentPhones||[]).filter(p=>typeof p==='string'));
+            if(saved.message)document.getElementById('messageText').value=saved.message;
+            if(sentPhones.size<contacts.length){resumeBatch.style.display='block';sendStatus.textContent='Saved batch restored: '+sentPhones.size+' sent, '+(contacts.length-sentPhones.size)+' remaining. Reconnect and tap Resume remaining messages.';}
+          }catch(e){localStorage.removeItem(batchStorageKey);}
+        }
         let waReady=${sock ? 'true' : 'false'};
         async function refreshConnection(){
           try{
@@ -389,13 +406,13 @@ function createClientRoutes() {
           rows.forEach(c=>{
             const row=document.createElement('div');row.className='group-check-row';
             row.innerHTML='<input type="checkbox" aria-label="Select '+esc(c.name)+'" '+(selected.has(c.phone)?'checked':'')+'><div style="min-width:0;flex:1"><strong>'+esc(c.name)+'</strong><br><small>'+esc(c.phone)+' · On WhatsApp</small></div><button type="button" class="secondary" style="width:auto;min-width:78px;margin:0">Send</button>';
-            row.querySelector('input').addEventListener('change',e=>{if(e.target.checked)selected.add(c.phone);else selected.delete(c.phone);updateCount();});
+            row.querySelector('input').addEventListener('change',e=>{if(e.target.checked)selected.add(c.phone);else selected.delete(c.phone);updateCount();persistBatch();});
             row.querySelector('button').addEventListener('click',()=>sendOne(c));list.appendChild(row);
           });updateCount();
         }
         function updateCount(){
-          status.textContent=contacts.length+' verified WhatsApp contact(s) · '+selected.size+' selected';
           const chosen=contacts.filter(c=>selected.has(c.phone));
+          status.textContent=contacts.length+' verified WhatsApp contact(s) · '+chosen.length+' selected';
           selectedSummary.textContent=chosen.length?chosen.map(c=>c.name+' ('+c.phone+')').join(' · '):'No contacts selected.';
           sendSelected.disabled=chosen.length===0;
           sendSelected.textContent='Send to '+chosen.length+' selected contact'+(chosen.length===1?'':'s');
@@ -422,7 +439,7 @@ function createClientRoutes() {
             status.textContent='Checking '+candidates.length+' selected number(s) on WhatsApp…';
             const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:candidates})});
             const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
-            contacts=d.contacts||[];selected.clear();contacts.forEach(c=>selected.add(c.phone));render();
+            contacts=d.contacts||[];selected.clear();sentPhones.clear();contacts.forEach(c=>selected.add(c.phone));render();persistBatch();
             status.textContent=contacts.length+' of '+candidates.length+' selected contacts are on WhatsApp; all verified contacts are ticked automatically.';
           }catch(e){if(e.name==='AbortError')status.textContent='Contact selection cancelled.';else status.textContent=e.message||'Could not read selected phone contacts.';}
           finally{choose.disabled=false;choose.textContent='Choose contacts from phonebook';}
@@ -436,24 +453,25 @@ function createClientRoutes() {
           try{const r=await fetch('/client/api/contact-messaging/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:c.phone,message,consent:true})});const d=await r.json();sendStatus.textContent=d.ok?'Message sent to '+c.name+'.':(d.error||'Message could not be sent.');return !!d.ok;}
           catch(e){sendStatus.textContent='Network error. Please try again.';return false;}
         }
-        sendSelected.addEventListener('click',async()=>{
-          const chosen=contacts.filter(c=>selected.has(c.phone));
-          if(!chosen.length){sendStatus.textContent='Select at least one recipient first.';return;}
+        document.getElementById('messageText').addEventListener('input',persistBatch);
+        async function runBatch(resume=false){
+          const chosen=contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone));
+          if(!chosen.length){sendStatus.textContent=sentPhones.size?'No unsent selected contacts remain.':'Select at least one recipient first.';return;}
           if(!document.getElementById('messageText').value.trim()){sendStatus.textContent='Write your message first.';return;}
-          if(!confirm('Send this message automatically to all '+chosen.length+' selected WhatsApp contacts? Continue only if these people agreed to receive it.'))return;
-          sendSelected.disabled=true;
+          if(!confirm((resume?'Resume':'Send')+' this message to '+chosen.length+' remaining selected WhatsApp contacts? Previously sent contacts will not be repeated. Continue only if these people agreed to receive it.'))return;
+          sendSelected.disabled=true;resumeBatch.disabled=true;persistBatch();
           let sent=0, skipped=0, failed=0, stopped=false;
           for(let i=0;i<chosen.length;i++){
             // Check the real linked socket before each recipient. Never keep
             // firing requests at a socket that has gone offline.
             if(!await refreshConnection()){
               stopped=true;
-              sendStatus.textContent='WhatsApp disconnected. Batch paused safely: '+sent+' sent, '+(chosen.length-i)+' remaining. Reconnect, then start a new batch for the remaining contacts.';
+              sendStatus.textContent='WhatsApp disconnected. Batch progress saved: '+(sentPhones.size)+' sent, '+(contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone)).length)+' remaining. Reconnect, then tap Resume remaining messages.';
               break;
             }
             sendStatus.textContent='Recipient '+(i+1)+' of '+chosen.length+': '+chosen[i].name;
             const ok=await sendOne(chosen[i],true);
-            if(ok)sent++;else if(!selected.has(chosen[i].phone))skipped++;else failed++;
+            if(ok){sent++;sentPhones.add(chosen[i].phone);persistBatch();}else if(!selected.has(chosen[i].phone))skipped++;else failed++;
             // Conservative pacing reduces bursts. Add a longer rest after
             // every 10 successful messages; this cannot override WhatsApp
             // rate limits or guarantee that WhatsApp keeps a session online.
@@ -466,13 +484,31 @@ function createClientRoutes() {
               }
             }
           }
-          if(!stopped)sendStatus.textContent='Finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped.';
-          updateCount();
+          if(!stopped){sendStatus.textContent='Batch pass finished: '+sent+' sent, '+failed+' failed, '+skipped+' skipped. '+contacts.filter(c=>selected.has(c.phone)&&!sentPhones.has(c.phone)).length+' remain unsent.';}
+          updateCount();persistBatch();
+          resumeBatch.style.display=contacts.some(c=>selected.has(c.phone)&&!sentPhones.has(c.phone))?'block':'none';
+          resumeBatch.disabled=false;
           await refreshConnection();
-        });
+        }
+        sendSelected.addEventListener('click',()=>runBatch(false));
+        resumeBatch.addEventListener('click',()=>runBatch(true));
         choose.addEventListener('click',chooseContacts);search.addEventListener('input',render);
-        document.getElementById('selectAll').addEventListener('click',()=>{contacts.forEach(c=>selected.add(c.phone));render();});
-        document.getElementById('clearAll').addEventListener('click',()=>{selected.clear();render();});
+        // Keep the selection Set as the single source of truth. Select All
+        // always replaces the current selection with every verified contact;
+        // Clear All empties it. Rendering then synchronizes every checkbox,
+        // the selected summary/count, and the batch-send button.
+        function setAllContactsSelected(checked){
+          selected.clear();
+          if(checked){
+            contacts.forEach(c=>{
+              if(c && typeof c.phone==='string' && c.phone)selected.add(c.phone);
+            });
+          }
+          render();persistBatch();
+        }
+        document.getElementById('selectAll').addEventListener('click',()=>setAllContactsSelected(true));
+        document.getElementById('clearAll').addEventListener('click',()=>setAllContactsSelected(false));
+        restoreBatch();
         render();
       })();
       </script>

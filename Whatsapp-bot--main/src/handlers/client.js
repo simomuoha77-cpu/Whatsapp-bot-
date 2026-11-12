@@ -337,8 +337,6 @@ function createClientRoutes() {
         <p><small id="waConnectionDetail">${sock ? 'Connected account: ' + String(sock.user?.id || '').split(':')[0].split('@')[0] : 'Restoring your linked WhatsApp session. This page will update automatically.'}</small></p>
         <button type="button" id="choosePhoneContacts" ${sock ? '' : 'disabled'}>Choose contacts from phonebook</button>
         <p><small>In the Android picker, select multiple contacts before tapping Done. The picker itself is controlled by Android; if it has no Select all button, select contacts using its multi-select option. Only the contacts you choose are checked.</small></p>
-        <p id="pickerUnavailableNote" style="display:none;"><small>The phonebook picker isn't available in this browser. Use the .vcf option below instead — in the Android Contacts app, tap the contacts you want, then Share → Export as .vcf (or Export contacts), then choose that file here.</small></p>
-        <input id="vcfFileInput" type="file" accept=".vcf,text/vcard,text/x-vcard" ${sock ? '' : 'disabled'} style="margin-top:8px;" />
         <input id="contactSearch" type="search" placeholder="Search verified WhatsApp contacts" autocomplete="off" />
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button type="button" id="selectAll" class="secondary" style="width:auto">Select all verified</button>
@@ -362,54 +360,6 @@ function createClientRoutes() {
         const sendStatus=document.getElementById('sendStatus');
         const search=document.getElementById('contactSearch');
         const choose=document.getElementById('choosePhoneContacts');
-        const vcfInput=document.getElementById('vcfFileInput');
-        const pickerNote=document.getElementById('pickerUnavailableNote');
-        // The native Android Contact Picker (navigator.contacts.select) is
-        // only available in Chrome for Android, and only sometimes even
-        // then — plenty of real devices/Chrome builds simply don't expose
-        // it. When it's missing, the button would previously just fail
-        // silently with no real alternative despite the page's own text
-        // promising a .vcf fallback that was never actually built. Surface
-        // that clearly instead of leaving people stuck.
-        if(!navigator.contacts || typeof navigator.contacts.select!=='function'){
-          pickerNote.style.display='block';
-        }
-        // Parses standard vCard (.vcf) text into the same {name, phone}
-        // shape the native picker produces, so it can feed the exact same
-        // verify-phonebook flow below. Handles multiple contacts in one
-        // file (consecutive BEGIN:VCARD...END:VCARD blocks) and multiple
-        // phone numbers per contact.
-        function parseVcf(text){
-          const out=[];
-          const blocks=text.split(/BEGIN:VCARD/i).slice(1);
-          for(const block of blocks){
-            const nameMatch=block.match(/^FN:(.*)$/im);
-            const name=nameMatch?nameMatch[1].trim():'';
-            const telMatches=[...block.matchAll(/^TEL[^:]*:(.+)$/gim)];
-            for(const m of telMatches){
-              const phone=String(m[1]||'').replace(/[^\\d+]/g,'').replace(/^\\+/,'');
-              if(/^\\d{7,15}$/.test(phone))out.push({name:name||phone,phone});
-            }
-          }
-          return out;
-        }
-        async function handleVcfFile(file){
-          try{
-            status.textContent='Reading '+file.name+'…';
-            const text=await file.text();
-            const parsed=parseVcf(text);
-            const unique=new Map();
-            for(const c of parsed)unique.set(c.phone,c);
-            const candidates=[...unique.values()];
-            if(!candidates.length){status.textContent='No valid phone numbers were found in that file.';return;}
-            await verifyCandidates(candidates);
-          }catch(e){status.textContent='Could not read that .vcf file. Make sure it was exported from Contacts as a standard vCard.';}
-        }
-        vcfInput.addEventListener('change',()=>{
-          const file=vcfInput.files && vcfInput.files[0];
-          if(file)handleVcfFile(file);
-          vcfInput.value='';
-        });
         const waPill=document.getElementById('waConnectionPill');
         const waDetail=document.getElementById('waConnectionDetail');
         const selectedSummary=document.getElementById('selectedSummary');
@@ -450,22 +400,11 @@ function createClientRoutes() {
           sendSelected.disabled=chosen.length===0;
           sendSelected.textContent='Send to '+chosen.length+' selected contact'+(chosen.length===1?'':'s');
         }
-        async function verifyCandidates(candidates){
-          status.textContent='Checking '+candidates.length+' selected number(s) on WhatsApp…';
-          try{
-            const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:candidates})});
-            const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
-            contacts=d.contacts||[];selected.clear();contacts.forEach(c=>selected.add(c.phone));render();
-            status.textContent=contacts.length+' of '+candidates.length+' selected contacts are on WhatsApp; all verified contacts are ticked automatically.';
-          }catch(e){status.textContent=e.message||'Could not verify those contacts.';}
-        }
         async function chooseContacts(){
           if(!waReady){status.textContent='WhatsApp is still reconnecting. Wait until the connection indicator turns green, then try again.';return;}
           if(!window.isSecureContext){status.textContent='Phonebook access requires a secure HTTPS page. Open this dashboard using its HTTPS address.';return;}
           if(!navigator.contacts || typeof navigator.contacts.select!=='function'){
-            status.textContent='This browser does not provide the phonebook picker. Use the .vcf file option below instead.';
-            pickerNote.style.display='block';
-            return;
+            status.textContent='This browser does not provide Android Contact Picker access. Open this page in the latest Chrome on your Redmi, not inside an in-app browser.';return;
           }
           try{
             choose.disabled=true;choose.textContent='Opening phonebook…';
@@ -480,7 +419,11 @@ function createClientRoutes() {
             }
             const candidates=[...unique.values()];
             if(!candidates.length){status.textContent='No valid phone numbers were selected.';return;}
-            await verifyCandidates(candidates);
+            status.textContent='Checking '+candidates.length+' selected number(s) on WhatsApp…';
+            const r=await fetch('/client/api/contact-messaging/verify-phonebook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:candidates})});
+            const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not verify contacts');
+            contacts=d.contacts||[];selected.clear();contacts.forEach(c=>selected.add(c.phone));render();
+            status.textContent=contacts.length+' of '+candidates.length+' selected contacts are on WhatsApp; all verified contacts are ticked automatically.';
           }catch(e){if(e.name==='AbortError')status.textContent='Contact selection cancelled.';else status.textContent=e.message||'Could not read selected phone contacts.';}
           finally{choose.disabled=false;choose.textContent='Choose contacts from phonebook';}
         }
@@ -752,8 +695,7 @@ function createClientRoutes() {
           function fallback(){try{var t=document.createElement('textarea');t.value=code;t.setAttribute('readonly','');t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();t.setSelectionRange(0,code.length);var ok=document.execCommand('copy');document.body.removeChild(t);done(ok);}catch(e){done(false);}}}
         function tick(){api('/client/api/connect/status').then(function(d){
           if(d.status==='connected'){pill('on','CONNECTED');qrBox.innerHTML='<h2>✅ Connected!</h2>';qrHelp.style.display='none';pairBtn.style.display='none';pairBox.innerHTML='';shownCode=null;clearInterval(timer);setTimeout(function(){location.href='/client/dashboard';},2000);return;}
-          if(d.pairingError){pill('off','PAIRING FAILED');pairBox.textContent=d.pairingError+' — tap the pairing button to retry.';pairBtn.disabled=false;return;}
-           if(d.pairingCode){pill('off','WAITING FOR PAIRING CODE');qrBox.innerHTML='';qrHelp.style.display='none';if(shownCode!==d.pairingCode){shownCode=d.pairingCode;pairBox.innerHTML='<h1 id="codeText" style="letter-spacing:4px">'+d.pairingCode+'</h1><button type="button" id="copyBtn">Copy code</button><p><small>WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead, then enter this code.</small></p>';document.getElementById('copyBtn').addEventListener('click',copyCode);}return;}
+          if(d.pairingCode){pill('off','WAITING FOR PAIRING CODE');qrBox.innerHTML='';qrHelp.style.display='none';if(shownCode!==d.pairingCode){shownCode=d.pairingCode;pairBox.innerHTML='<h1 id="codeText" style="letter-spacing:4px">'+d.pairingCode+'</h1><button type="button" id="copyBtn">Copy code</button><p><small>WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead, then enter this code.</small></p>';document.getElementById('copyBtn').addEventListener('click',copyCode);}return;}
           if(d.qr){pill('off','SCAN QR CODE');qrBox.innerHTML='<img alt="QR code" style="max-width:100%" src="'+d.qr+'"/>';qrHelp.style.display='';return;}
           pill('off',(d.status||'starting').toUpperCase().replace(/_/g,' '));qrBox.innerHTML='<p><small>Preparing your connection… this can take up to a minute.</small></p>';
         }).catch(function(e){pill('off','ERROR');qrBox.textContent=e.message;});}
@@ -772,7 +714,7 @@ function createClientRoutes() {
       const status = (st && st.status) || (bot && bot.status) || 'pending';
       const qr = st && st.qr && status !== 'connected' ? await QRCode.toDataURL(st.qr, { width: 280 }) : null;
       res.set('Cache-Control', 'no-store');
-      return res.json({ ok: true, status, qr, pairingCode: status !== 'connected' && st && st.pairingCode ? st.pairingCode : null, pairingError: st?.pairingError || null });
+      return res.json({ ok: true, status, qr, pairingCode: status !== 'connected' && st && st.pairingCode ? st.pairingCode : null });
     } catch (err) { logger.warn({ err: err && err.message }, 'Connect status failed'); return res.status(500).json({ ok: false, error: 'Could not read connection status.' }); }
   });
 
@@ -781,12 +723,11 @@ function createClientRoutes() {
       const botId = req.session.clientBotId;
       const digits = normalizePhoneNumber(req.session.clientPhoneNumber);
       if (!digits) return res.status(400).json({ ok: false, error: 'No valid registered phone number on this account.' });
-      if (!getBotState(botId)) await ensureSocket(botId);
+      if (!getBotState(botId)) { await ensureSocket(botId); await sleep(2500); }
       const st = getBotState(botId);
       if (st && st.status === 'connected') return res.json({ ok: true, status: 'connected' });
-      if (!st) return res.status(409).json({ ok: false, error: 'WhatsApp connection is still starting. Wait a few seconds and retry.' });
-      if (!requestPairingCodeForBot(botId, digits)) return res.status(409).json({ ok: false, error: 'This WhatsApp session is not ready for pairing yet. Wait a few seconds and retry.' });
-      return res.json({ ok: true, status: 'pairing_requested' });
+      if (!requestPairingCodeForBot(botId, digits)) return res.status(409).json({ ok: false, error: 'The connection is still starting. Try again in a few seconds.' });
+      return res.json({ ok: true });
     } catch (err) { logger.warn({ err: err && err.message }, 'Pairing request failed'); return res.status(500).json({ ok: false, error: 'Could not request a pairing code.' }); }
   });
 

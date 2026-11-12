@@ -19,6 +19,7 @@ const baileysLogger = pino({ level: 'silent' });
  * Each entry: { sock, status, qr, pairingCode, slug, pendingPairingNumber }
  */
 const activeBots = new Map();
+let latestBaileysVersionPromise = null;
 
 // Lightweight in-memory contacts cache per bot, built from Baileys'
 // contacts.upsert/update/history-sync events. Needed for statusJidList
@@ -67,9 +68,17 @@ async function updateBotStatusInDb(botId, status, extra = {}) {
  * connected clients stay logged in across deploys/restarts on Render's
  * free tier, which wipes the filesystem but persists database data.
  */
-async function startBotSocket(botId, slug, onReady) {
+async function createBotSocket(botId, slug, onReady) {
   const { state, saveCreds } = await useMongoAuthState(botId);
-  const { version } = await fetchLatestBaileysVersion();
+  // Fetch the WhatsApp Web version once per process. Fetching it for every
+  // bot adds avoidable network latency to dashboard connection startup.
+  if (!latestBaileysVersionPromise) {
+    latestBaileysVersionPromise = fetchLatestBaileysVersion().catch((err) => {
+      latestBaileysVersionPromise = null;
+      throw err;
+    });
+  }
+  const { version } = await latestBaileysVersionPromise;
 
   const sock = makeWASocket({
     version,
@@ -133,25 +142,7 @@ async function startBotSocket(botId, slug, onReady) {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (
-      connection === 'connecting' &&
-      entry.pendingPairingNumber &&
-      !sock.authState.creds.registered
-    ) {
-      try {
-        const code = await sock.requestPairingCode(entry.pendingPairingNumber);
-        entry.pairingCode = code;
-        entry.status = 'pairing_code_pending';
-        await updateBotStatusInDb(botId, 'pairing_code_pending');
-        logger.info({ botId, code }, 'Pairing code generated');
-      } catch (err) {
-        logger.error({ err, botId }, 'Failed to generate pairing code');
-      } finally {
-        entry.pendingPairingNumber = null;
-      }
-    }
-
-    if (qr && !entry.pendingPairingNumber) {
+    if (qr && !entry.pendingPairingNumber && !entry.pairingRequestPromise) {
       entry.qr = qr;
       entry.status = 'qr_pending';
       await updateBotStatusInDb(botId, 'qr_pending');
@@ -329,18 +320,70 @@ async function startBotSocket(botId, slug, onReady) {
   return sock;
 }
 
-function requestPairingCodeForBot(botId, phoneNumber) {
+// Coalesce simultaneous starts for the same bot. Startup can be triggered by
+// process boot, the dashboard, or reconnect logic; without this guard those
+// paths can create competing sockets for one stored WhatsApp session.
+const startingBotSockets = new Map();
+function startBotSocket(botId, slug, onReady) {
+  if (startingBotSockets.has(botId)) return startingBotSockets.get(botId);
+  const startPromise = createBotSocket(botId, slug, onReady).finally(() => {
+    if (startingBotSockets.get(botId) === startPromise) startingBotSockets.delete(botId);
+  });
+  startingBotSockets.set(botId, startPromise);
+  return startPromise;
+}
+
+async function requestPairingCodeForBot(botId, phoneNumber) {
   const entry = activeBots.get(botId);
-  if (!entry) return false;
-  entry.pendingPairingNumber = phoneNumber;
-  if (entry.sock && !entry.sock.authState?.creds?.registered) {
-    entry.sock.requestPairingCode(phoneNumber).then((code) => {
-      entry.pairingCode = code;
-      entry.status = 'pairing_code_pending';
-      entry.pendingPairingNumber = null;
-    }).catch((err) => logger.error({ err, botId }, 'Immediate pairing code request failed'));
+  if (!entry || !entry.sock) {
+    throw new Error('WhatsApp connection is not initialized yet. Please retry.');
   }
-  return true;
+  if (entry.sock.authState?.creds?.registered || entry.status === 'connected') {
+    throw new Error('This WhatsApp account is already connected.');
+  }
+  if (entry.pairingCode) return entry.pairingCode;
+  if (entry.pairingRequestPromise) return entry.pairingRequestPromise;
+
+  entry.pendingPairingNumber = phoneNumber;
+  entry.pairingRequestPromise = (async () => {
+    // Baileys exposes this readiness promise on its socket. Calling
+    // requestPairingCode before the underlying WebSocket is open can fail
+    // with a precondition error or leave the dashboard waiting forever.
+    let timeoutId;
+    try {
+      await Promise.race([
+        entry.sock.waitForSocketOpen(),
+        new Promise((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error('WhatsApp is taking too long to connect. Please try again.')), 25000);
+        }),
+      ]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+
+    if (activeBots.get(botId) !== entry) {
+      throw new Error('WhatsApp connection restarted. Please request a new code.');
+    }
+    if (entry.sock.authState?.creds?.registered) {
+      throw new Error('This WhatsApp account is already connected.');
+    }
+
+    const code = await entry.sock.requestPairingCode(phoneNumber);
+    entry.pairingCode = code;
+    entry.qr = null;
+    entry.status = 'pairing_code_pending';
+    await updateBotStatusInDb(botId, 'pairing_code_pending');
+    logger.info({ botId }, 'WhatsApp pairing code generated');
+    return code;
+  })().catch((err) => {
+    logger.error({ err, botId }, 'Pairing code generation failed');
+    throw err;
+  }).finally(() => {
+    entry.pendingPairingNumber = null;
+    entry.pairingRequestPromise = null;
+  });
+
+  return entry.pairingRequestPromise;
 }
 
 /**

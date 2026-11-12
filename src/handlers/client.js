@@ -712,40 +712,26 @@ function createClientRoutes() {
 
   // --- In-dashboard WhatsApp connection (QR + pairing code). Everything is scoped to
   // the logged-in client's own bot via the session; there is no shareable URL. ---
-  // Keep the in-flight startup promise, not just a boolean flag. A pairing
-  // request can arrive while the socket is being created; callers must await
-  // that same startup instead of returning early and incorrectly reporting
-  // that the WhatsApp connection is still starting.
   const startingBots = new Map();
   const ensureSocket = async (botId) => {
     if (getBotState(botId)) return getBotState(botId);
-    const existingStart = startingBots.get(botId);
-    if (existingStart) return existingStart;
-
+    if (startingBots.has(botId)) return startingBots.get(botId);
     const startPromise = (async () => {
-      try {
-        const bot = await getBotById(botId);
-        if (!bot) throw new Error('Bot account was not found.');
-        // Another request may have started the socket while this task waited
-        // for the database lookup.
-        if (getBotState(botId)) return getBotState(botId);
-        return await enqueueConnect(() => startBotSocket(botId, bot.slug, require('./botStartHook').onBotReady));
-      } catch (err) {
-        logger.warn({ err: err && err.message, botId }, 'Could not start bot socket for dashboard connect');
-        throw err;
-      }
+      const bot = await getBotById(botId);
+      if (!bot) throw new Error('Bot account was not found.');
+      return enqueueConnect(() => startBotSocket(botId, bot.slug, require('./botStartHook').onBotReady));
     })();
     startingBots.set(botId, startPromise);
-    try {
-      return await startPromise;
-    } finally {
-      if (startingBots.get(botId) === startPromise) startingBots.delete(botId);
-    }
+    try { return await startPromise; }
+    catch (err) {
+      logger.warn({ err: err && err.message, botId }, 'Could not start bot socket for dashboard connect');
+      throw err;
+    } finally { startingBots.delete(botId); }
   };
 
   router.get('/connect', async (req, res) => {
     const botId = req.session.clientBotId;
-    ensureSocket(botId); // fire and forget; the page polls status
+    ensureSocket(botId).catch(() => {}); // fire and forget; the page polls status
     const pricing = await getPricingSettings();
     res.send(layout('Connect WhatsApp', `
       <h1>Connect your WhatsApp</h1>
@@ -772,8 +758,7 @@ function createClientRoutes() {
           function fallback(){try{var t=document.createElement('textarea');t.value=code;t.setAttribute('readonly','');t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();t.setSelectionRange(0,code.length);var ok=document.execCommand('copy');document.body.removeChild(t);done(ok);}catch(e){done(false);}}}
         function tick(){api('/client/api/connect/status').then(function(d){
           if(d.status==='connected'){pill('on','CONNECTED');qrBox.innerHTML='<h2>✅ Connected!</h2>';qrHelp.style.display='none';pairBtn.style.display='none';pairBox.innerHTML='';shownCode=null;clearInterval(timer);setTimeout(function(){location.href='/client/dashboard';},2000);return;}
-          if(d.pairingError){pill('off','PAIRING FAILED');pairBox.textContent=d.pairingError+' — tap the pairing button to retry.';pairBtn.disabled=false;return;}
-           if(d.pairingCode){pill('off','WAITING FOR PAIRING CODE');qrBox.innerHTML='';qrHelp.style.display='none';if(shownCode!==d.pairingCode){shownCode=d.pairingCode;pairBox.innerHTML='<h1 id="codeText" style="letter-spacing:4px">'+d.pairingCode+'</h1><button type="button" id="copyBtn">Copy code</button><p><small>WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead, then enter this code.</small></p>';document.getElementById('copyBtn').addEventListener('click',copyCode);}return;}
+          if(d.pairingCode){pill('off','WAITING FOR PAIRING CODE');qrBox.innerHTML='';qrHelp.style.display='none';if(shownCode!==d.pairingCode){shownCode=d.pairingCode;pairBox.innerHTML='<h1 id="codeText" style="letter-spacing:4px">'+d.pairingCode+'</h1><button type="button" id="copyBtn">Copy code</button><p><small>WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead, then enter this code.</small></p>';document.getElementById('copyBtn').addEventListener('click',copyCode);}return;}
           if(d.qr){pill('off','SCAN QR CODE');qrBox.innerHTML='<img alt="QR code" style="max-width:100%" src="'+d.qr+'"/>';qrHelp.style.display='';return;}
           pill('off',(d.status||'starting').toUpperCase().replace(/_/g,' '));qrBox.innerHTML='<p><small>Preparing your connection… this can take up to a minute.</small></p>';
         }).catch(function(e){pill('off','ERROR');qrBox.textContent=e.message;});}
@@ -792,7 +777,7 @@ function createClientRoutes() {
       const status = (st && st.status) || (bot && bot.status) || 'pending';
       const qr = st && st.qr && status !== 'connected' ? await QRCode.toDataURL(st.qr, { width: 280 }) : null;
       res.set('Cache-Control', 'no-store');
-      return res.json({ ok: true, status, qr, pairingCode: status !== 'connected' && st && st.pairingCode ? st.pairingCode : null, pairingError: st?.pairingError || null });
+      return res.json({ ok: true, status, qr, pairingCode: status !== 'connected' && st && st.pairingCode ? st.pairingCode : null });
     } catch (err) { logger.warn({ err: err && err.message }, 'Connect status failed'); return res.status(500).json({ ok: false, error: 'Could not read connection status.' }); }
   });
 
@@ -801,13 +786,17 @@ function createClientRoutes() {
       const botId = req.session.clientBotId;
       const digits = normalizePhoneNumber(req.session.clientPhoneNumber);
       if (!digits) return res.status(400).json({ ok: false, error: 'No valid registered phone number on this account.' });
-      if (!getBotState(botId)) await ensureSocket(botId);
+      await ensureSocket(botId);
       const st = getBotState(botId);
       if (st && st.status === 'connected') return res.json({ ok: true, status: 'connected' });
-      if (!st) return res.status(409).json({ ok: false, error: 'WhatsApp connection is still starting. Wait a few seconds and retry.' });
-      if (!requestPairingCodeForBot(botId, digits)) return res.status(409).json({ ok: false, error: 'This WhatsApp session is not ready for pairing yet. Wait a few seconds and retry.' });
-      return res.json({ ok: true, status: 'pairing_requested' });
-    } catch (err) { logger.warn({ err: err && err.message }, 'Pairing request failed'); return res.status(500).json({ ok: false, error: 'Could not request a pairing code.' }); }
+      const pairingCode = await requestPairingCodeForBot(botId, digits);
+      return res.json({ ok: true, status: 'pairing_code_pending', pairingCode });
+    } catch (err) {
+      const message = err && err.message ? err.message : 'Could not request a pairing code.';
+      logger.warn({ err: message, botId: req.session.clientBotId }, 'Pairing request failed');
+      const status = /taking too long|retry/i.test(message) ? 504 : 500;
+      return res.status(status).json({ ok: false, error: message });
+    }
   });
 
   router.get('/dashboard', async (req, res) => {
