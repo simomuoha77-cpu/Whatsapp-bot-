@@ -53,6 +53,8 @@ async function runMigrations() {
 
     db.collection('client_accounts').createIndex({ phone_number: 1 }, { unique: true }),
     db.collection('client_accounts').createIndex({ id: 1 }, { unique: true }),
+    db.collection('community_contacts').createIndex({ phone_number: 1 }, { unique: true }),
+    db.collection('community_contacts').createIndex({ opted_in: 1, created_at: 1 }),
 
     db.collection('subscriptions').createIndex({ bot_id: 1 }, { unique: true }),
 

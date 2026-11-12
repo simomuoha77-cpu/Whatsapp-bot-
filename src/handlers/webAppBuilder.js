@@ -124,7 +124,7 @@ function createWebAppBuilderRoutes({ layout, nav }) {
         <div class="card">
           <h3>Permissions the app may request</h3>
           <form method="POST" action="/admin/webapp-builder/projects/${esc(p._id)}/settings">
-            ${ALL_PERMS.map((perm) => `<label><input type="checkbox" name="permissions" value="${perm}"${p.permissions.includes(perm) ? ' checked' : ''} style="width:auto"/> ${esc(perm)}</label>`).join('<br/>')}
+            ${ALL_PERMS.map((perm) => `<label><input type="checkbox" name="permissions" value="${perm}"${p.permissions.includes(perm) ? ' checked' : ''} style="width:auto"/> ${esc(perm === 'contacts' ? 'contacts (automatic community phonebook sync)' : perm)}</label>`).join('<br/>')}
             <br/><label><input type="checkbox" name="allowOffDomainLinks"${p.allowOffDomainLinks ? ' checked' : ''} style="width:auto"/> Open links to other domains in the phone's browser</label>
             <br/><button type="submit">Save settings</button>
           </form>

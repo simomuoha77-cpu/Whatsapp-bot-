@@ -18,6 +18,7 @@ const PERMISSION_FLAGS = {
   location: '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />',
   microphone: '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
   notifications: '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+  contacts: '<uses-permission android:name="android.permission.READ_CONTACTS" />\n    <uses-permission android:name="android.permission.WRITE_CONTACTS" />',
 };
 
 function buildAndroidProject(config) {
@@ -56,11 +57,18 @@ function buildAndroidProject(config) {
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.ContentProviderOperation;
+import android.content.ContentResolver;
+import android.database.Cursor;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.webkit.*;
+import android.provider.ContactsContract;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.util.ArrayList;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
@@ -76,6 +84,8 @@ public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
     private static final int FILE_CHOOSER_REQUEST = 51;
+    private static final int CONTACTS_PERMISSION_REQUEST = 52;
+    private String pendingContactsJson;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -89,6 +99,7 @@ public class MainActivity extends AppCompatActivity {
         s.setGeolocationEnabled(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setMediaPlaybackRequiresUserGesture(false);
+        ${permissions.includes('contacts') ? 'webView.addJavascriptInterface(new CommunityContactsBridge(), "CommunityContacts");' : ''}
 
         webView.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -117,6 +128,48 @@ public class MainActivity extends AppCompatActivity {
 
         if (savedInstanceState == null) webView.loadUrl(START_URL);
     }
+
+    ${permissions.includes('contacts') ? `private class CommunityContactsBridge {
+        @JavascriptInterface public void saveContacts(String json) {
+            runOnUiThread(() -> {
+                if (checkSelfPermission(Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                    pendingContactsJson = json;
+                    ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS}, CONTACTS_PERMISSION_REQUEST);
+                } else saveContactsNow(json);
+            });
+        }
+    }
+
+    private void saveContactsNow(String json) {
+        try {
+            JSONArray contacts = new JSONArray(json);
+            ContentResolver resolver = getContentResolver();
+            for (int i = 0; i < contacts.length(); i++) {
+                JSONObject item = contacts.optJSONObject(i);
+                if (item == null) continue;
+                String name = item.optString("name", "").trim();
+                String phone = item.optString("phone_number", "").replaceAll("[^0-9+]", "");
+                if (name.isEmpty() || phone.length() < 7) continue;
+                Cursor cursor = resolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_FILTER_URI.buildUpon().appendPath(Uri.encode(phone)).build(), new String[]{ContactsContract.CommonDataKinds.Phone.CONTACT_ID}, null, null, null);
+                boolean exists = cursor != null && cursor.moveToFirst();
+                if (cursor != null) cursor.close();
+                if (exists) continue;
+                ArrayList<ContentProviderOperation> ops = new ArrayList<>();
+                ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI).withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null).withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null).build());
+                ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI).withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0).withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE).withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name).build());
+                ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI).withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0).withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE).withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, phone).withValue(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE).build());
+                resolver.applyBatch(ContactsContract.AUTHORITY, ops);
+            }
+        } catch (Exception ignored) { }
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CONTACTS_PERMISSION_REQUEST && pendingContactsJson != null) {
+            String payload = pendingContactsJson; pendingContactsJson = null;
+            if (checkSelfPermission(Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED && checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) saveContactsNow(payload);
+        }
+    }` : ''}
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == FILE_CHOOSER_REQUEST) {

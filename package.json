@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node --test test/groupInvite.test.js test/apkStudio.test.js test/webAppBuilder.test.js"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "6.7.18",

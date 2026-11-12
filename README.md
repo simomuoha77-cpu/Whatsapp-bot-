@@ -251,6 +251,10 @@ Clients see a **VPN** tab in `/client/dashboard`. They choose a package, enter a
 
 The VPN shop uses the same Daraja credentials and callback endpoint as client subscriptions; no separate payment credentials are required. Configure the existing `DARAJA_CONSUMER_KEY`, `DARAJA_CONSUMER_SECRET`, `DARAJA_SHORTCODE`, `DARAJA_PASSKEY`, and public callback URL as described above.
 
-## Contact announcement helper (normal WhatsApp)
+## Automatic community contact sync
 
-Open `tools/contact-announcement.html` in a browser on your phone. Export your Redmi contacts from the Contacts app as a `.vcf`/vCard file, import that file into the helper, select the people you want to notify, enter your new number in international format (for Kenya, start with `254`), and prepare the individual WhatsApp chat links. Each link opens one chat with the announcement prefilled; you must review and tap **Send** in WhatsApp. The helper does not upload your address book or send messages automatically.
+New self-registrations now ask for the member's display name and explicit consent to share that name and WhatsApp number with other opted-in members. The shared directory is served to authenticated clients at `/client/api/community-contacts`.
+
+To write these contacts into Android's phonebook, generate the companion Android project with the Web App Builder and enable **contacts (automatic community phonebook sync)** under project permissions. The generated WebView bridge requests Android's READ_CONTACTS and WRITE_CONTACTS permissions at runtime and inserts missing community numbers. Existing contacts are not duplicated. The sync endpoint is polled while the companion app's WebView is active; Android may pause WebView timers when the app is backgrounded, so this first version does not promise continuous background synchronization.
+
+Members' names and numbers are shared with all opted-in members. Do not enable this for a directory unless users understand and agree to that sharing.
