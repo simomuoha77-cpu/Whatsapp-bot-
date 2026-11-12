@@ -19,7 +19,6 @@ const baileysLogger = pino({ level: 'silent' });
  * Each entry: { sock, status, qr, pairingCode, slug, pendingPairingNumber }
  */
 const activeBots = new Map();
-let latestBaileysVersionPromise = null;
 
 // Lightweight in-memory contacts cache per bot, built from Baileys'
 // contacts.upsert/update/history-sync events. Needed for statusJidList
@@ -68,17 +67,9 @@ async function updateBotStatusInDb(botId, status, extra = {}) {
  * connected clients stay logged in across deploys/restarts on Render's
  * free tier, which wipes the filesystem but persists database data.
  */
-async function createBotSocket(botId, slug, onReady) {
+async function startBotSocket(botId, slug, onReady) {
   const { state, saveCreds } = await useMongoAuthState(botId);
-  // Fetch the WhatsApp Web version once per process. Fetching it for every
-  // bot adds avoidable network latency to dashboard connection startup.
-  if (!latestBaileysVersionPromise) {
-    latestBaileysVersionPromise = fetchLatestBaileysVersion().catch((err) => {
-      latestBaileysVersionPromise = null;
-      throw err;
-    });
-  }
-  const { version } = await latestBaileysVersionPromise;
+  const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
     version,
@@ -142,7 +133,7 @@ async function createBotSocket(botId, slug, onReady) {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr && !entry.pendingPairingNumber && !entry.pairingRequestPromise) {
+    if (qr && !entry.pendingPairingNumber) {
       entry.qr = qr;
       entry.status = 'qr_pending';
       await updateBotStatusInDb(botId, 'qr_pending');
@@ -320,70 +311,55 @@ async function createBotSocket(botId, slug, onReady) {
   return sock;
 }
 
-// Coalesce simultaneous starts for the same bot. Startup can be triggered by
-// process boot, the dashboard, or reconnect logic; without this guard those
-// paths can create competing sockets for one stored WhatsApp session.
-const startingBotSockets = new Map();
-function startBotSocket(botId, slug, onReady) {
-  if (startingBotSockets.has(botId)) return startingBotSockets.get(botId);
-  const startPromise = createBotSocket(botId, slug, onReady).finally(() => {
-    if (startingBotSockets.get(botId) === startPromise) startingBotSockets.delete(botId);
-  });
-  startingBotSockets.set(botId, startPromise);
-  return startPromise;
-}
-
 async function requestPairingCodeForBot(botId, phoneNumber) {
   const entry = activeBots.get(botId);
   if (!entry || !entry.sock) {
-    throw new Error('WhatsApp connection is not initialized yet. Please retry.');
+    throw new Error('WhatsApp connection is not ready yet. Wait for the connection to initialize, then retry.');
   }
-  if (entry.sock.authState?.creds?.registered || entry.status === 'connected') {
-    throw new Error('This WhatsApp account is already connected.');
+  if (entry.status === 'connected' || entry.sock.authState?.creds?.registered) {
+    throw new Error('This WhatsApp account is already connected. Reset the connection before requesting a new pairing code.');
   }
   if (entry.pairingCode) return entry.pairingCode;
-  if (entry.pairingRequestPromise) return entry.pairingRequestPromise;
+  if (entry.pairingRequest) return entry.pairingRequest;
 
-  entry.pendingPairingNumber = phoneNumber;
-  entry.pairingRequestPromise = (async () => {
-    // Baileys exposes this readiness promise on its socket. Calling
-    // requestPairingCode before the underlying WebSocket is open can fail
-    // with a precondition error or leave the dashboard waiting forever.
-    let timeoutId;
+  entry.pairingRequest = (async () => {
     try {
-      await Promise.race([
-        entry.sock.waitForSocketOpen(),
-        new Promise((_, reject) => {
-          timeoutId = setTimeout(() => reject(new Error('WhatsApp is taking too long to connect. Please try again.')), 25000);
-        }),
-      ]);
+      // Baileys generates the code from the active socket. Await the actual
+      // result so the HTTP endpoint cannot report success before a code exists.
+      let timeoutId;
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error('WhatsApp did not return a pairing code within 20 seconds. Check the server connection and retry.')),
+          20000
+        );
+      });
+      let code;
+      try {
+        code = await Promise.race([entry.sock.requestPairingCode(phoneNumber), timeout]);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      if (!code || typeof code !== 'string') {
+        throw new Error('WhatsApp returned an empty pairing code. Please retry.');
+      }
+      entry.pairingCode = code;
+      entry.status = 'pairing_code_pending';
+      entry.qr = null;
+      await updateBotStatusInDb(botId, 'pairing_code_pending');
+      logger.info({ botId }, 'WhatsApp pairing code generated');
+      return code;
+    } catch (err) {
+      entry.pairingCode = null;
+      entry.pendingPairingNumber = null;
+      logger.error({ err: err && err.message, botId }, 'Pairing code generation failed');
+      throw new Error(err && err.message ? err.message : 'WhatsApp could not generate a pairing code. Please retry.');
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
+      entry.pairingRequest = null;
+      entry.pendingPairingNumber = null;
     }
+  })();
 
-    if (activeBots.get(botId) !== entry) {
-      throw new Error('WhatsApp connection restarted. Please request a new code.');
-    }
-    if (entry.sock.authState?.creds?.registered) {
-      throw new Error('This WhatsApp account is already connected.');
-    }
-
-    const code = await entry.sock.requestPairingCode(phoneNumber);
-    entry.pairingCode = code;
-    entry.qr = null;
-    entry.status = 'pairing_code_pending';
-    await updateBotStatusInDb(botId, 'pairing_code_pending');
-    logger.info({ botId }, 'WhatsApp pairing code generated');
-    return code;
-  })().catch((err) => {
-    logger.error({ err, botId }, 'Pairing code generation failed');
-    throw err;
-  }).finally(() => {
-    entry.pendingPairingNumber = null;
-    entry.pairingRequestPromise = null;
-  });
-
-  return entry.pairingRequestPromise;
+  return entry.pairingRequest;
 }
 
 /**
