@@ -63,10 +63,38 @@ async function updateBotStatusInDb(botId, status, extra = {}) {
 
 /**
  * Starts (or restarts) a Baileys connection for a single bot/client.
- * Auth credentials are stored in Postgres (not the filesystem), so
+ * Auth credentials are stored in MongoDB (not the filesystem), so
  * connected clients stay logged in across deploys/restarts on Render's
  * free tier, which wipes the filesystem but persists database data.
  */
+async function generatePendingPairingCode(botId, entry) {
+  if (!entry || !entry.pendingPairingNumber || entry.pairingCodeRequestPromise) return;
+  const sock = entry.sock;
+  if (!sock || sock.authState?.creds?.registered) return;
+
+  const phoneNumber = entry.pendingPairingNumber;
+  entry.pairingError = null;
+  entry.pairingCodeRequestPromise = (async () => {
+    try {
+      const code = await sock.requestPairingCode(phoneNumber);
+      // Ignore stale results if this socket was replaced while the request ran.
+      if (activeBots.get(botId) !== entry) return;
+      entry.pairingCode = code;
+      entry.status = 'pairing_code_pending';
+      entry.pendingPairingNumber = null;
+      await updateBotStatusInDb(botId, 'pairing_code_pending');
+      logger.info({ botId }, 'WhatsApp pairing code generated');
+    } catch (err) {
+      entry.pairingError = err?.message || 'WhatsApp could not generate a pairing code. Please retry.';
+      entry.pendingPairingNumber = null;
+      logger.error({ err, botId }, 'Failed to generate WhatsApp pairing code');
+    } finally {
+      entry.pairingCodeRequestPromise = null;
+    }
+  })();
+  return entry.pairingCodeRequestPromise;
+}
+
 async function startBotSocket(botId, slug, onReady) {
   const { state, saveCreds } = await useMongoAuthState(botId);
   const { version } = await fetchLatestBaileysVersion();
@@ -133,22 +161,8 @@ async function startBotSocket(botId, slug, onReady) {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (
-      connection === 'connecting' &&
-      entry.pendingPairingNumber &&
-      !sock.authState.creds.registered
-    ) {
-      try {
-        const code = await sock.requestPairingCode(entry.pendingPairingNumber);
-        entry.pairingCode = code;
-        entry.status = 'pairing_code_pending';
-        await updateBotStatusInDb(botId, 'pairing_code_pending');
-        logger.info({ botId, code }, 'Pairing code generated');
-      } catch (err) {
-        logger.error({ err, botId }, 'Failed to generate pairing code');
-      } finally {
-        entry.pendingPairingNumber = null;
-      }
+    if (connection === 'connecting' && entry.pendingPairingNumber && !sock.authState.creds.registered) {
+      await generatePendingPairingCode(botId, entry);
     }
 
     if (qr && !entry.pendingPairingNumber) {
@@ -331,14 +345,19 @@ async function startBotSocket(botId, slug, onReady) {
 
 function requestPairingCodeForBot(botId, phoneNumber) {
   const entry = activeBots.get(botId);
-  if (!entry) return false;
+  if (!entry || !entry.sock || entry.sock.authState?.creds?.registered) return false;
+  // Do not issue parallel requests: WhatsApp invalidates/overlaps pairing
+  // attempts, which can surface on the phone as “Couldn't link device”.
+  if (entry.pairingCodeRequestPromise) return true;
+  entry.pairingCode = null;
+  entry.pairingError = null;
   entry.pendingPairingNumber = phoneNumber;
-  if (entry.sock && !entry.sock.authState?.creds?.registered) {
-    entry.sock.requestPairingCode(phoneNumber).then((code) => {
-      entry.pairingCode = code;
-      entry.status = 'pairing_code_pending';
-      entry.pendingPairingNumber = null;
-    }).catch((err) => logger.error({ err, botId }, 'Immediate pairing code request failed'));
+  // If the initial `connecting` event already happened, the WebSocket is
+  // ready and we can start immediately. Otherwise that event starts it once.
+  if (entry.sock.ws?.readyState === 1) {
+    generatePendingPairingCode(botId, entry).catch((err) =>
+      logger.error({ err, botId }, 'Pairing code request failed')
+    );
   }
   return true;
 }

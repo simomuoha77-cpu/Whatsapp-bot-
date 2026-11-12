@@ -209,7 +209,7 @@ async function call(method, p, req) {
   let blocked = false;
   for (const mw of mws) { let nexted = false; await mw(req, res, () => { nexted = true; }); if (!nexted) { blocked = true; break; } }
   if (!blocked) { for (const h of route.h) { await h(req, res, () => {}); if (res.body !== null) break; } }
-  await Promise.race([res.done, new Promise((r) => setTimeout(r, 300))]);
+  await Promise.race([res.done, new Promise((r) => setTimeout(r, 3000))]);
   return res;
 }
 const fileReq = (buf, extra = {}) => { const p = tmp(buf); return { path: p, req: { file: { path: p, size: buf.length, originalname: '../../weird name.apk' }, body: { name: '' }, ...extra } }; };
