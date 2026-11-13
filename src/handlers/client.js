@@ -49,7 +49,7 @@ const { getMessageStatsForBot } = require('../db/messages');
 const { countAiReplies } = require('../db/aiChatHistory');
 const { countActiveContacts } = require('../db/contacts');
 const logger = require('../utils/logger');
-const { registerCommunityContact, getCommunityContactForBot, withdrawCommunityContact, getCommunityContacts } = require('../db/communityContacts');
+const { registerCommunityContact, getCommunityContactForBot, withdrawCommunityContact, getCommunityContacts, getCommunityContactsPage, deleteCommunityContact } = require('../db/communityContacts');
 
 const REFERRAL_BONUS_DAYS = parseInt(process.env.REFERRAL_BONUS_DAYS || '7', 10);
 
@@ -179,17 +179,12 @@ function layout(title, body, extraHead = '') {
             if (button) { button.disabled = true; button.textContent = 'Checking contact permission…'; }
             var error = document.getElementById('community-permission-error');
             if (!window.CommunityContacts || typeof window.CommunityContacts.requestContactsPermission !== 'function') {
-              // This APK cannot show Android's Contacts dialog. Still save the membership
-              // (so Save is never dead) and tell the user on the next page.
-              if (error) error.textContent = 'This APK does not include the Contacts permission bridge. Saving your membership; use Download contacts below.';
-              var flag = form.querySelector('input[name="noBridge"]');
-              if (flag) flag.value = '1';
-              if (button) button.textContent = 'Saving…';
-              HTMLFormElement.prototype.submit.call(form);
+              if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
+              if (error) error.textContent = 'This APK does not include the Contacts permission bridge. Rebuild the APK with Contacts enabled, then try again.';
               return false;
             }
             window.communitySettingsFormPending = form;
-            window.communityContactsPermissionResult = function(granted) {
+            window.communityContactsPermissionResult = function(granted, permanent) {
               var pending = window.communitySettingsFormPending;
               window.communitySettingsFormPending = null;
               if (!pending) return;
@@ -198,7 +193,10 @@ function layout(title, body, extraHead = '') {
                 HTMLFormElement.prototype.submit.call(pending);
               } else {
                 if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
-                if (error) error.textContent = 'Contacts permission was not granted. Allow Contacts permission in Android settings to join the community.';
+                if (error) error.textContent = permanent
+                  ? 'Contacts permission is blocked. Opening Android Settings: tap Permissions, then Contacts, then Allow, and come back and tap Save.'
+                  : 'Contacts permission was not granted, so nothing was saved. Tap Save again and choose Allow.';
+                if (permanent) { try { window.CommunityContacts.openAppSettings(); } catch (_) {} }
               }
             };
             try { window.CommunityContacts.requestContactsPermission(); }
@@ -208,14 +206,26 @@ function layout(title, body, extraHead = '') {
           (function communityContactSync(){
             if (!window.CommunityContacts || typeof window.CommunityContacts.saveContacts !== 'function') return;
             var busy = false;
+            var status = document.getElementById('community-sync-status');
+            function say(msg, bad) { if (status) { status.textContent = msg; status.style.color = bad ? '#fca5a5' : '#4ade80'; } }
+            window.communityContactsSyncResult = function(saved, skipped, failed) {
+              if (failed > 0) say('Contact sync: ' + saved + ' added, ' + failed + ' failed. Will retry.', true);
+              else say('Contact sync complete: ' + saved + ' added, ' + skipped + ' already saved.', false);
+            };
             async function sync(){
               if (busy) return; busy = true;
               try {
-                var response = await fetch('/client/api/community-contacts', { credentials: 'same-origin', cache: 'no-store' });
-                if (!response.ok) return;
-                var data = await response.json();
-                if (data.ok && Array.isArray(data.contacts)) window.CommunityContacts.saveContacts(JSON.stringify(data.contacts));
-              } catch (_) { /* retry on the next poll */ } finally { busy = false; }
+                var after = '';
+                for (var guard = 0; guard < 500; guard++) {
+                  var response = await fetch('/client/api/community-contacts?limit=100&after=' + encodeURIComponent(after), { credentials: 'same-origin', cache: 'no-store' });
+                  if (!response.ok) { say('Contact sync failed (server error). Will retry.', true); return; }
+                  var data = await response.json();
+                  if (!data.ok || !Array.isArray(data.contacts)) { say('Contact sync failed. Will retry.', true); return; }
+                  if (data.contacts.length) window.CommunityContacts.saveContacts(JSON.stringify(data.contacts));
+                  if (!data.nextCursor) return;
+                  after = data.nextCursor;
+                }
+              } catch (_) { say('Contact sync failed (network). Will retry.', true); } finally { busy = false; }
             }
             sync(); setInterval(sync, 60000);
           })();
@@ -353,33 +363,23 @@ function createClientRoutes() {
   router.get('/api/community-contacts', async (req, res) => {
     try {
       const membership = await getCommunityContactForBot(req.session.clientBotId);
-      if (!membership || !membership.opted_in) return res.json({ ok: true, contacts: [] });
-      const contacts = await getCommunityContacts(req.session.clientBotId);
       res.set('Cache-Control', 'no-store');
-      return res.json({ ok: true, contacts });
+      // Only participating members receive the directory; everyone else gets an empty page.
+      if (!membership || !membership.opted_in) return res.json({ ok: true, contacts: [], nextCursor: null });
+      const page = await getCommunityContactsPage(req.session.clientBotId, { after: String(req.query.after || '').replace(/[^0-9]/g, ''), limit: req.query.limit });
+      return res.json({ ok: true, contacts: page.contacts, nextCursor: page.nextCursor });
     } catch (err) {
       logger.warn({ err: err && err.message, botId: req.session.clientBotId }, 'Community contact sync failed');
       return res.status(500).json({ ok: false, error: 'Could not load community contacts.' });
     }
   });
 
-
-  // Permission-free fallback: opening a .vcf on Android offers to import it into Contacts.
-  router.get('/community-contacts.vcf', async (req, res) => {
+  router.post('/settings/community-contacts/delete', async (req, res) => {
     try {
-      const membership = await getCommunityContactForBot(req.session.clientBotId);
-      if (!membership || !membership.opted_in) return res.status(403).type('text/plain').send('Join the community first.');
-      const contacts = await getCommunityContacts(req.session.clientBotId);
-      const clean = (v) => String(v || '').replace(/[\r\n;,\\]/g, ' ').trim();
-      const vcf = contacts.map((c) => {
-        const num = String(c.phone_number || '').replace(/[^0-9]/g, '');
-        return num.length < 7 ? '' : 'BEGIN:VCARD\r\nVERSION:3.0\r\nFN:' + clean(c.name) + '\r\nN:' + clean(c.name) + ';;;;\r\nTEL;TYPE=CELL:+' + num + '\r\nEND:VCARD\r\n';
-      }).join('');
-      res.set({ 'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="community-contacts.vcf"' });
-      return res.type('text/vcard').send(vcf);
+      await deleteCommunityContact(req.session.clientBotId);
+      return res.redirect('/client/dashboard?community=deleted');
     } catch (err) {
-      logger.warn({ err: err && err.message }, 'Community vcf export failed');
-      return res.status(500).type('text/plain').send('Could not export contacts.');
+      return res.redirect('/client/dashboard?communityError=' + encodeURIComponent('Could not remove your details. Try again.'));
     }
   });
 
@@ -391,13 +391,13 @@ function createClientRoutes() {
       return res.redirect('/client/dashboard?community=off');
     }
     const name = String(req.body.displayName || '').trim().replace(/\s+/g, ' ').slice(0, 60);
-    const phoneNumber = String(req.body.phoneNumber || '').replace(/[^0-9]/g, '').slice(0, 15);
-    if (!name || phoneNumber.length < 7) {
+    const phoneNumber = normalizePhoneNumber(String(req.body.phoneNumber || '')).slice(0, 15);
+    if (!name || !/^[0-9]{9,15}$/.test(phoneNumber)) {
       return res.redirect('/client/dashboard?communityError=' + encodeURIComponent('Enter the name you want displayed and a valid WhatsApp number.'));
     }
     try {
       await registerCommunityContact({ botId, name, phoneNumber });
-      return res.redirect('/client/dashboard?community=on' + (req.body.noBridge === '1' ? '&nobridge=1' : ''));
+      return res.redirect('/client/dashboard?community=on');
     } catch (err) {
       return res.redirect('/client/dashboard?communityError=' + encodeURIComponent(err.message || 'Could not join the community.'));
     }
@@ -906,9 +906,7 @@ function createClientRoutes() {
     const payments = await getPaymentsForBot(botId, 10);
     const communityMembership = await getCommunityContactForBot(botId);
     const communityError = req.query.communityError ? `<div class=\"error-box\">${String(req.query.communityError).replace(/[<>]/g, '')}</div>` : '';
-    const communityNoBridge = req.query.nobridge === '1' ? '<p style=\"color:#fbbf24\">Saved. This APK does not include the Contacts permission bridge, so contacts cannot be added automatically. Tap Download contacts below, or rebuild the APK from the Web App Builder.</p>' : '';
-    const communityVcf = communityMembership?.opted_in ? '<p><a href=\"/client/community-contacts.vcf\" target=\"_blank\" style=\"color:#00a884\">⬇ Download contacts (.vcf)</a></p>' : '';
-    const communityMessage = req.query.community === 'on' ? '<p style=\"color:#4ade80\">You joined the community contact directory.</p>' : req.query.community === 'off' ? '<p>You left the community contact directory.</p>' : '';
+    const communityMessage = req.query.community === 'on' ? '<p style=\"color:#4ade80\">You joined the community contact directory.</p>' : req.query.community === 'off' ? '<p>You left the community contact directory.</p>' : req.query.community === 'deleted' ? '<p>Your shared details were removed from the directory.</p>' : '';
 
     const now = new Date();
     const trialActive = sub && sub.trial_ends_at && now < new Date(sub.trial_ends_at);
@@ -998,16 +996,16 @@ function createClientRoutes() {
       <div class="card">
         <h3>👥 Automatic Community Contact Sync</h3>
         <p>Optional: join the shared directory. If enabled, your chosen name and WhatsApp number are shared with other members, and their contacts can be saved by your companion APK after you grant Android contact permission.</p>
-        ${communityError}${communityMessage}${communityNoBridge}
+        ${communityError}${communityMessage}
         <p id="community-permission-error" role="alert" style="color:#fca5a5"></p>
+        <p id="community-sync-status" role="status"></p>
         <form method="POST" action="/client/settings/community-contacts" onsubmit="return window.submitCommunitySettings(event, this);">
           <input name="displayName" maxlength="60" placeholder="Name you want other members to see" value="${(communityMembership?.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" />
           <input name="phoneNumber" inputmode="numeric" placeholder="WhatsApp number (e.g. 254712345678)" value="${(communityMembership?.phone_number || req.session.clientPhoneNumber || '').replace(/[^0-9]/g, '')}" />
           <label style="display:flex;gap:9px;align-items:flex-start;margin:10px 0;color:#cbd5e1;font-size:13px"><input type="checkbox" name="enabled" value="1" ${communityMembership?.opted_in ? 'checked' : ''} style="width:auto;margin-top:3px" /> Join community and share these details with other opted-in members</label>
-          <input type="hidden" name="noBridge" value="" />
           <button type="submit">Save Community Settings</button>
         </form>
-        ${communityVcf}
+        ${communityMembership ? '<form method="POST" action="/client/settings/community-contacts/delete" onsubmit="return confirm(\'Remove your name and number from the shared directory?\')"><button type="submit" style="background:#3b1d1d;color:#fca5a5;margin-top:8px">Delete my shared details</button></form>' : ''}
         <small>${communityMembership?.opted_in ? 'Membership is enabled. Untick the box and save to leave.' : 'You are not currently a member. Joining is optional.'}</small>
       </div>
       <p style="color:#888;font-size:0.85em;">Bot ID: ${botId} (compare this against the botId shown in any .v debug reply from WhatsApp — if they don't match, that's the bug)</p>

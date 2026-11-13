@@ -148,6 +148,17 @@ public class MainActivity extends AppCompatActivity {
             });
         }
 
+        // Used when Android will no longer show the dialog (permanently denied).
+        @JavascriptInterface public void openAppSettings() {
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+                } catch (Exception e) {
+                    webView.evaluateJavascript("alert('Open Android Settings > Apps > this app > Permissions > Contacts and allow it.')", null);
+                }
+            });
+        }
+
         @JavascriptInterface public void saveContacts(String json) {
             runOnUiThread(() -> {
                 if (checkSelfPermission(Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
@@ -158,27 +169,63 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // Runs off the UI thread. Reports real counts back to the page; never fails silently.
     private void saveContactsNow(String json) {
-        try {
-            JSONArray contacts = new JSONArray(json);
-            ContentResolver resolver = getContentResolver();
-            for (int i = 0; i < contacts.length(); i++) {
-                JSONObject item = contacts.optJSONObject(i);
-                if (item == null) continue;
-                String name = item.optString("name", "").trim();
-                String phone = item.optString("phone_number", "").replaceAll("[^0-9+]", "");
-                if (name.isEmpty() || phone.length() < 7) continue;
-                Cursor cursor = resolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_FILTER_URI.buildUpon().appendPath(Uri.encode(phone)).build(), new String[]{ContactsContract.CommonDataKinds.Phone.CONTACT_ID}, null, null, null);
-                boolean exists = cursor != null && cursor.moveToFirst();
-                if (cursor != null) cursor.close();
-                if (exists) continue;
-                ArrayList<ContentProviderOperation> ops = new ArrayList<>();
-                ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI).withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null).withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null).build());
-                ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI).withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0).withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE).withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name).build());
-                ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI).withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0).withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE).withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, phone).withValue(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE).build());
-                resolver.applyBatch(ContactsContract.AUTHORITY, ops);
+        final String payload = json;
+        new Thread(() -> {
+            int saved = 0, skipped = 0, failed = 0;
+            try {
+                JSONArray contacts = new JSONArray(payload);
+                ContentResolver resolver = getContentResolver();
+                for (int i = 0; i < contacts.length(); i++) {
+                    try {
+                        JSONObject item = contacts.optJSONObject(i);
+                        if (item == null) { failed++; continue; }
+                        String name = item.optString("name", "").trim();
+                        String digits = item.optString("phone_number", "").replaceAll("[^0-9]", "");
+                        if (name.isEmpty() || digits.length() < 9) { failed++; continue; }
+                        String phone = "+" + digits;
+                        String sourceId = "community:" + digits;
+
+                        // Already created by this app: update the name if the member renamed themselves.
+                        long rawId = -1;
+                        Cursor rc = resolver.query(ContactsContract.RawContacts.CONTENT_URI, new String[]{ContactsContract.RawContacts._ID},
+                            ContactsContract.RawContacts.SOURCE_ID + "=? AND " + ContactsContract.RawContacts.DELETED + "=0", new String[]{sourceId}, null);
+                        if (rc != null) { if (rc.moveToFirst()) rawId = rc.getLong(0); rc.close(); }
+                        if (rawId > 0) {
+                            ArrayList<ContentProviderOperation> upd = new ArrayList<>();
+                            upd.add(ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
+                                .withSelection(ContactsContract.Data.RAW_CONTACT_ID + "=? AND " + ContactsContract.Data.MIMETYPE + "=?", new String[]{String.valueOf(rawId), ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE})
+                                .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name).build());
+                            resolver.applyBatch(ContactsContract.AUTHORITY, upd);
+                            skipped++;
+                            continue;
+                        }
+
+                        // Number already in the phonebook (saved by the user): never duplicate it.
+                        Cursor cursor = resolver.query(ContactsContract.PhoneLookup.CONTENT_FILTER_URI.buildUpon().appendPath(phone).build(), new String[]{ContactsContract.PhoneLookup._ID}, null, null, null);
+                        boolean exists = cursor != null && cursor.moveToFirst();
+                        if (cursor != null) cursor.close();
+                        if (exists) { skipped++; continue; }
+
+                        ArrayList<ContentProviderOperation> ops = new ArrayList<>();
+                        ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI).withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null).withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null).withValue(ContactsContract.RawContacts.SOURCE_ID, sourceId).build());
+                        ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI).withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0).withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE).withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name).build());
+                        ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI).withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0).withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE).withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, phone).withValue(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE).build());
+                        resolver.applyBatch(ContactsContract.AUTHORITY, ops);
+                        saved++;
+                    } catch (Exception perContact) {
+                        android.util.Log.e("CommunityContacts", "Failed to save one contact", perContact);
+                        failed++;
+                    }
+                }
+            } catch (Exception e) {
+                android.util.Log.e("CommunityContacts", "Contact sync failed", e);
+                failed++;
             }
-        } catch (Exception ignored) { }
+            final int fs = saved, fk = skipped, ff = failed;
+            runOnUiThread(() -> webView.evaluateJavascript("if(window.communityContactsSyncResult)window.communityContactsSyncResult(" + fs + "," + fk + "," + ff + ")", null));
+        }).start();
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
@@ -186,11 +233,13 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == CONTACTS_PERMISSION_REQUEST) {
             boolean granted = checkSelfPermission(Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED
                 && checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED;
+            // After a denial, "no rationale" means Android will not show the dialog again.
+            boolean permanent = !granted && !shouldShowRequestPermissionRationale(Manifest.permission.READ_CONTACTS) && !shouldShowRequestPermissionRationale(Manifest.permission.WRITE_CONTACTS);
             if (pendingContactsJson != null) {
                 String payload = pendingContactsJson; pendingContactsJson = null;
                 if (granted) saveContactsNow(payload);
             }
-            webView.evaluateJavascript("if(window.communityContactsPermissionResult)window.communityContactsPermissionResult(" + (granted ? "true" : "false") + ")", null);
+            webView.evaluateJavascript("if(window.communityContactsPermissionResult)window.communityContactsPermissionResult(" + (granted ? "true" : "false") + "," + (permanent ? "true" : "false") + ")", null);
         }
     }` : ''}
 
