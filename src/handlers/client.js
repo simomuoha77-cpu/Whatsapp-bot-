@@ -179,8 +179,13 @@ function layout(title, body, extraHead = '') {
             if (button) { button.disabled = true; button.textContent = 'Checking contact permission…'; }
             var error = document.getElementById('community-permission-error');
             if (!window.CommunityContacts || typeof window.CommunityContacts.requestContactsPermission !== 'function') {
-              if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
-              if (error) error.textContent = 'This APK does not include the Contacts permission bridge. Rebuild the APK with Contacts enabled, then try again.';
+              // This APK cannot show Android's Contacts dialog. Still save the membership
+              // (so Save is never dead) and tell the user on the next page.
+              if (error) error.textContent = 'This APK does not include the Contacts permission bridge. Saving your membership; use Download contacts below.';
+              var flag = form.querySelector('input[name="noBridge"]');
+              if (flag) flag.value = '1';
+              if (button) button.textContent = 'Saving…';
+              HTMLFormElement.prototype.submit.call(form);
               return false;
             }
             window.communitySettingsFormPending = form;
@@ -359,6 +364,25 @@ function createClientRoutes() {
   });
 
 
+  // Permission-free fallback: opening a .vcf on Android offers to import it into Contacts.
+  router.get('/community-contacts.vcf', async (req, res) => {
+    try {
+      const membership = await getCommunityContactForBot(req.session.clientBotId);
+      if (!membership || !membership.opted_in) return res.status(403).type('text/plain').send('Join the community first.');
+      const contacts = await getCommunityContacts(req.session.clientBotId);
+      const clean = (v) => String(v || '').replace(/[\r\n;,\\]/g, ' ').trim();
+      const vcf = contacts.map((c) => {
+        const num = String(c.phone_number || '').replace(/[^0-9]/g, '');
+        return num.length < 7 ? '' : 'BEGIN:VCARD\r\nVERSION:3.0\r\nFN:' + clean(c.name) + '\r\nN:' + clean(c.name) + ';;;;\r\nTEL;TYPE=CELL:+' + num + '\r\nEND:VCARD\r\n';
+      }).join('');
+      res.set({ 'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="community-contacts.vcf"' });
+      return res.type('text/vcard').send(vcf);
+    } catch (err) {
+      logger.warn({ err: err && err.message }, 'Community vcf export failed');
+      return res.status(500).type('text/plain').send('Could not export contacts.');
+    }
+  });
+
   router.post('/settings/community-contacts', async (req, res) => {
     const botId = req.session.clientBotId;
     const enabled = req.body.enabled === '1';
@@ -373,7 +397,7 @@ function createClientRoutes() {
     }
     try {
       await registerCommunityContact({ botId, name, phoneNumber });
-      return res.redirect('/client/dashboard?community=on');
+      return res.redirect('/client/dashboard?community=on' + (req.body.noBridge === '1' ? '&nobridge=1' : ''));
     } catch (err) {
       return res.redirect('/client/dashboard?communityError=' + encodeURIComponent(err.message || 'Could not join the community.'));
     }
@@ -882,6 +906,8 @@ function createClientRoutes() {
     const payments = await getPaymentsForBot(botId, 10);
     const communityMembership = await getCommunityContactForBot(botId);
     const communityError = req.query.communityError ? `<div class=\"error-box\">${String(req.query.communityError).replace(/[<>]/g, '')}</div>` : '';
+    const communityNoBridge = req.query.nobridge === '1' ? '<p style=\"color:#fbbf24\">Saved. This APK does not include the Contacts permission bridge, so contacts cannot be added automatically. Tap Download contacts below, or rebuild the APK from the Web App Builder.</p>' : '';
+    const communityVcf = communityMembership?.opted_in ? '<p><a href=\"/client/community-contacts.vcf\" target=\"_blank\" style=\"color:#00a884\">⬇ Download contacts (.vcf)</a></p>' : '';
     const communityMessage = req.query.community === 'on' ? '<p style=\"color:#4ade80\">You joined the community contact directory.</p>' : req.query.community === 'off' ? '<p>You left the community contact directory.</p>' : '';
 
     const now = new Date();
@@ -972,14 +998,16 @@ function createClientRoutes() {
       <div class="card">
         <h3>👥 Automatic Community Contact Sync</h3>
         <p>Optional: join the shared directory. If enabled, your chosen name and WhatsApp number are shared with other members, and their contacts can be saved by your companion APK after you grant Android contact permission.</p>
-        ${communityError}${communityMessage}
+        ${communityError}${communityMessage}${communityNoBridge}
         <p id="community-permission-error" role="alert" style="color:#fca5a5"></p>
         <form method="POST" action="/client/settings/community-contacts" onsubmit="return window.submitCommunitySettings(event, this);">
           <input name="displayName" maxlength="60" placeholder="Name you want other members to see" value="${(communityMembership?.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" />
           <input name="phoneNumber" inputmode="numeric" placeholder="WhatsApp number (e.g. 254712345678)" value="${(communityMembership?.phone_number || req.session.clientPhoneNumber || '').replace(/[^0-9]/g, '')}" />
           <label style="display:flex;gap:9px;align-items:flex-start;margin:10px 0;color:#cbd5e1;font-size:13px"><input type="checkbox" name="enabled" value="1" ${communityMembership?.opted_in ? 'checked' : ''} style="width:auto;margin-top:3px" /> Join community and share these details with other opted-in members</label>
+          <input type="hidden" name="noBridge" value="" />
           <button type="submit">Save Community Settings</button>
         </form>
+        ${communityVcf}
         <small>${communityMembership?.opted_in ? 'Membership is enabled. Untick the box and save to leave.' : 'You are not currently a member. Joining is optional.'}</small>
       </div>
       <p style="color:#888;font-size:0.85em;">Bot ID: ${botId} (compare this against the botId shown in any .v debug reply from WhatsApp — if they don't match, that's the bug)</p>

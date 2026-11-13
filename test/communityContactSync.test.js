@@ -20,14 +20,22 @@ test('community contact APK permission generates a native phonebook bridge', () 
   assert.match(java, /ContactsContract\.CommonDataKinds\.Phone\.CONTENT_ITEM_TYPE/);
 });
 
-test('community contact bridge is not exposed when contacts permission is omitted', () => {
+test('community contact bridge is always generated, even when contacts permission is omitted', () => {
   const files = buildAndroidProject({
     packageName: 'com.example.web', appName: 'Web App', domain: 'example.com', permissions: [],
   });
   const java = files['app/src/main/java/com/example/web/MainActivity.java'];
-  assert.doesNotMatch(java, /addJavascriptInterface\(new CommunityContactsBridge/);
+  assert.match(java, /addJavascriptInterface\(new CommunityContactsBridge\(\), \"CommunityContacts\"\)/);
+  assert.match(files['app/src/main/AndroidManifest.xml'], /android\.permission\.READ_CONTACTS/);
 });
 
+test('save without APK bridge still saves membership and offers a .vcf download', () => {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
+  assert.match(source, /name="noBridge"/);
+  assert.match(source, /router\.get\('\/community-contacts\.vcf'/);
+  assert.match(source, /nobridge=1/);
+});
  test('registration does not require community name or consent; dashboard has optional opt-in settings', () => {
   const fs = require('node:fs');
   const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
