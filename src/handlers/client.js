@@ -195,7 +195,7 @@ function layout(title, body, extraHead = '') {
                 if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
                 if (error) error.textContent = permanent
                   ? 'Contacts permission is blocked. Opening Android Settings: tap Permissions, then Contacts, then Allow, and come back and tap Save.'
-                  : 'Contacts permission was not granted, so nothing was saved. Tap Save again and choose Allow.';
+                  : 'Contacts permission was denied. Android cannot save community contacts to your phonebook until you allow it, so nothing was saved. Tap Save again and choose Allow.';
                 if (permanent) { try { window.CommunityContacts.openAppSettings(); } catch (_) {} }
               }
             };
@@ -212,17 +212,27 @@ function layout(title, body, extraHead = '') {
               if (failed > 0) say('Contact sync: ' + saved + ' added, ' + failed + ' failed. Will retry.', true);
               else say('Contact sync complete: ' + saved + ' added, ' + skipped + ' already saved.', false);
             };
+            window.communityContactsPruneResult = function(removed, failed) {
+              if (failed > 0) say('Removed ' + removed + ' left-member contact(s); ' + failed + ' failed. Will retry.', true);
+              else if (removed > 0) say('Removed ' + removed + ' contact(s) of members who left the community.', false);
+            };
             async function sync(){
               if (busy) return; busy = true;
               try {
                 var after = '';
+                var active = [];
                 for (var guard = 0; guard < 500; guard++) {
                   var response = await fetch('/client/api/community-contacts?limit=100&after=' + encodeURIComponent(after), { credentials: 'same-origin', cache: 'no-store' });
                   if (!response.ok) { say('Contact sync failed (server error). Will retry.', true); return; }
                   var data = await response.json();
                   if (!data.ok || !Array.isArray(data.contacts)) { say('Contact sync failed. Will retry.', true); return; }
                   if (data.contacts.length) window.CommunityContacts.saveContacts(JSON.stringify(data.contacts));
-                  if (!data.nextCursor) return;
+                  data.contacts.forEach(function(c) { active.push(c.phone_number); });
+                  if (!data.nextCursor) {
+                    // Whole directory fetched without error: safe to remove contacts of members who left.
+                    if (data.member && typeof window.CommunityContacts.finishSync === 'function') window.CommunityContacts.finishSync(JSON.stringify(active));
+                    return;
+                  }
                   after = data.nextCursor;
                 }
               } catch (_) { say('Contact sync failed (network). Will retry.', true); } finally { busy = false; }
@@ -365,9 +375,9 @@ function createClientRoutes() {
       const membership = await getCommunityContactForBot(req.session.clientBotId);
       res.set('Cache-Control', 'no-store');
       // Only participating members receive the directory; everyone else gets an empty page.
-      if (!membership || !membership.opted_in) return res.json({ ok: true, contacts: [], nextCursor: null });
+      if (!membership || !membership.opted_in) return res.json({ ok: true, member: false, contacts: [], nextCursor: null });
       const page = await getCommunityContactsPage(req.session.clientBotId, { after: String(req.query.after || '').replace(/[^0-9]/g, ''), limit: req.query.limit });
-      return res.json({ ok: true, contacts: page.contacts, nextCursor: page.nextCursor });
+      return res.json({ ok: true, member: true, contacts: page.contacts, nextCursor: page.nextCursor });
     } catch (err) {
       logger.warn({ err: err && err.message, botId: req.session.clientBotId }, 'Community contact sync failed');
       return res.status(500).json({ ok: false, error: 'Could not load community contacts.' });

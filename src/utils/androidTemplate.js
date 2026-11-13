@@ -63,6 +63,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.ContentProviderOperation;
 import android.content.ContentResolver;
+import android.content.ContentUris;
 import android.database.Cursor;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -159,6 +160,14 @@ public class MainActivity extends AppCompatActivity {
             });
         }
 
+        // Called once after a COMPLETE, successful pass over the directory with the numbers of every
+        // currently participating member. Removes only contacts this app created (SOURCE_ID "community:")
+        // whose member left, was deleted, or changed number. Personal contacts are never touched.
+        @JavascriptInterface public void finishSync(String activeJson) {
+            final String payload = activeJson;
+            new Thread(() -> pruneCommunityContacts(payload)).start();
+        }
+
         @JavascriptInterface public void saveContacts(String json) {
             runOnUiThread(() -> {
                 if (checkSelfPermission(Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
@@ -167,6 +176,39 @@ public class MainActivity extends AppCompatActivity {
                 } else saveContactsNow(json);
             });
         }
+    }
+
+    private void pruneCommunityContacts(String activeJson) {
+        if (checkSelfPermission(Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED
+            || checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return;
+        int removed = 0, failed = 0;
+        try {
+            JSONArray arr = new JSONArray(activeJson);
+            java.util.HashSet<String> active = new java.util.HashSet<>();
+            for (int i = 0; i < arr.length(); i++) active.add("community:" + arr.optString(i, "").replaceAll("[^0-9]", ""));
+            ContentResolver resolver = getContentResolver();
+            ArrayList<Long> stale = new ArrayList<>();
+            Cursor c = resolver.query(ContactsContract.RawContacts.CONTENT_URI, new String[]{ContactsContract.RawContacts._ID, ContactsContract.RawContacts.SOURCE_ID},
+                ContactsContract.RawContacts.SOURCE_ID + " LIKE ? AND " + ContactsContract.RawContacts.DELETED + "=0", new String[]{"community:%"}, null);
+            if (c != null) {
+                while (c.moveToNext()) { if (!active.contains(c.getString(1))) stale.add(c.getLong(0)); }
+                c.close();
+            }
+            for (Long id : stale) {
+                try {
+                    resolver.delete(ContentUris.withAppendedId(ContactsContract.RawContacts.CONTENT_URI, id), null, null);
+                    removed++;
+                } catch (Exception e) {
+                    android.util.Log.e("CommunityContacts", "Failed to remove one contact", e);
+                    failed++;
+                }
+            }
+        } catch (Exception e) {
+            android.util.Log.e("CommunityContacts", "Contact cleanup failed", e);
+            failed++;
+        }
+        final int fr = removed, ff = failed;
+        runOnUiThread(() -> webView.evaluateJavascript("if(window.communityContactsPruneResult)window.communityContactsPruneResult(" + fr + "," + ff + ")", null));
     }
 
     // Runs off the UI thread. Reports real counts back to the page; never fails silently.

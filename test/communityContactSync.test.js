@@ -32,6 +32,9 @@ function assertContactsBridge({ manifest, java }) {
   assert.match(java, /requestPermissions\(MainActivity\.this, new String\[\]\{Manifest\.permission\.READ_CONTACTS, Manifest\.permission\.WRITE_CONTACTS\}, CONTACTS_PERMISSION_REQUEST\)/);
   assert.match(java, /communityContactsPermissionResult\(" \+ \(granted \? "true" : "false"\)/);
   assert.match(java, /void openAppSettings\(\)/);
+  assert.match(java, /void finishSync\(String activeJson\)/);
+  assert.match(java, /SOURCE_ID \+ " LIKE \?[^;]*"community:%"/, 'cleanup must only touch contacts created by this feature');
+  assert.match(java, /withValue\(ContactsContract\.RawContacts\.SOURCE_ID, sourceId\)/);
   assert.doesNotMatch(java, /catch \(Exception ignored\)/, 'contact errors must not be swallowed');
 }
 
@@ -199,4 +202,12 @@ test('cancelled permission-gated submit is not overwritten by generic Loading ha
   const fs = require('node:fs');
   const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
   assert.match(source, /document\.addEventListener\('submit', \(e\) => \{[\s\S]*?if \(e\.defaultPrevented\) return;/);
+});
+
+test('page prunes only after a complete successful pass and only for participating members', () => {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
+  assert.match(source, /data\.member && typeof window\.CommunityContacts\.finishSync === 'function'/);
+  assert.match(source, /member: false/);
+  assert.match(source, /Android cannot save community contacts to your phonebook until you allow it/);
 });
