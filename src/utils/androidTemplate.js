@@ -136,7 +136,9 @@ public class MainActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 boolean readGranted = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED;
                 boolean writeGranted = checkSelfPermission(Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED;
-                if (!readGranted || !writeGranted) {
+                if (readGranted && writeGranted) {
+                    webView.evaluateJavascript("if(window.communityContactsPermissionResult)window.communityContactsPermissionResult(true)", null);
+                } else {
                     ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS}, CONTACTS_PERMISSION_REQUEST);
                 }
             });
@@ -177,9 +179,14 @@ public class MainActivity extends AppCompatActivity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == CONTACTS_PERMISSION_REQUEST && pendingContactsJson != null) {
-            String payload = pendingContactsJson; pendingContactsJson = null;
-            if (checkSelfPermission(Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED && checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) saveContactsNow(payload);
+        if (requestCode == CONTACTS_PERMISSION_REQUEST) {
+            boolean granted = checkSelfPermission(Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                && checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED;
+            if (pendingContactsJson != null) {
+                String payload = pendingContactsJson; pendingContactsJson = null;
+                if (granted) saveContactsNow(payload);
+            }
+            webView.evaluateJavascript("if(window.communityContactsPermissionResult)window.communityContactsPermissionResult(" + (granted ? "true" : "false") + ")", null);
         }
     }` : ''}
 

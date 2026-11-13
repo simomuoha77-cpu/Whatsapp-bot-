@@ -41,3 +41,20 @@ test('community contact bridge is not exposed when contacts permission is omitte
   assert.match(source, /name="enabled"/);
   assert.match(source, /requestContactsPermission\(\)/);
  });
+
+
+test('save waits for native permission result and blocks silently missing APK bridge', () => {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
+  assert.match(source, /submitCommunitySettings = function\(event, form\)/);
+  assert.match(source, /This APK does not include the Contacts permission bridge/);
+  assert.match(source, /HTMLFormElement\.prototype\.submit\.call\(pending\)/);
+  assert.match(source, /communityContactsPermissionResult = function\(granted\)/);
+});
+
+test('native permission result is returned to WebView after Android permission dialog', () => {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(require.resolve('../src/utils/androidTemplate'), 'utf8');
+  assert.match(source, /communityContactsPermissionResult\(true\)/);
+  assert.match(source, /communityContactsPermissionResult\(" \+ \(granted \? "true" : "false"\)/);
+});

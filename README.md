@@ -18,3 +18,7 @@ The name and number are shared with all other opted-in community members. Users 
 
 ## Verification
 Run `node --test test/*.test.js` from the project root. The included tests verify the Android contact bridge and that registration does not require community membership.
+
+
+## Permission-on-save correction
+The dashboard now pauses form submission while the Android bridge requests READ_CONTACTS and WRITE_CONTACTS. It submits the membership form only after Android reports both permissions granted. If the bridge is missing from the APK, the page displays an explicit rebuild instruction instead of silently saving. If permission is denied, the form is not submitted and an error is shown. Rebuild the APK from the updated Web App Builder output with the Contacts option enabled.

@@ -172,6 +172,34 @@ function layout(title, body, extraHead = '') {
         </div>
         ${body}
         <script>
+          window.submitCommunitySettings = function(event, form) {
+            if (!form.enabled.checked) return true;
+            event.preventDefault();
+            var button = form.querySelector('button[type="submit"], button:not([type])');
+            if (button) { button.disabled = true; button.textContent = 'Checking contact permission…'; }
+            var error = document.getElementById('community-permission-error');
+            if (!window.CommunityContacts || typeof window.CommunityContacts.requestContactsPermission !== 'function') {
+              if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
+              if (error) error.textContent = 'This APK does not include the Contacts permission bridge. Rebuild the APK with Contacts enabled, then try again.';
+              return false;
+            }
+            window.communitySettingsFormPending = form;
+            window.communityContactsPermissionResult = function(granted) {
+              var pending = window.communitySettingsFormPending;
+              window.communitySettingsFormPending = null;
+              if (!pending) return;
+              if (granted) {
+                if (button) button.textContent = 'Saving…';
+                HTMLFormElement.prototype.submit.call(pending);
+              } else {
+                if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
+                if (error) error.textContent = 'Contacts permission was not granted. Allow Contacts permission in Android settings to join the community.';
+              }
+            };
+            try { window.CommunityContacts.requestContactsPermission(); }
+            catch (_) { window.communityContactsPermissionResult(false); }
+            return false;
+          };
           (function communityContactSync(){
             if (!window.CommunityContacts || typeof window.CommunityContacts.saveContacts !== 'function') return;
             var busy = false;
@@ -942,7 +970,8 @@ function createClientRoutes() {
         <h3>👥 Automatic Community Contact Sync</h3>
         <p>Optional: join the shared directory. If enabled, your chosen name and WhatsApp number are shared with other members, and their contacts can be saved by your companion APK after you grant Android contact permission.</p>
         ${communityError}${communityMessage}
-        <form method="POST" action="/client/settings/community-contacts" onsubmit="if (this.enabled.checked && window.CommunityContacts && window.CommunityContacts.requestContactsPermission) { window.CommunityContacts.requestContactsPermission(); }">
+        <p id="community-permission-error" role="alert" style="color:#fca5a5"></p>
+        <form method="POST" action="/client/settings/community-contacts" onsubmit="return window.submitCommunitySettings(event, this);">
           <input name="displayName" maxlength="60" placeholder="Name you want other members to see" value="${(communityMembership?.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" />
           <input name="phoneNumber" inputmode="numeric" placeholder="WhatsApp number (e.g. 254712345678)" value="${(communityMembership?.phone_number || req.session.clientPhoneNumber || '').replace(/[^0-9]/g, '')}" />
           <label style="display:flex;gap:9px;align-items:flex-start;margin:10px 0;color:#cbd5e1;font-size:13px"><input type="checkbox" name="enabled" value="1" ${communityMembership?.opted_in ? 'checked' : ''} style="width:auto;margin-top:3px" /> Join community and share these details with other opted-in members</label>
