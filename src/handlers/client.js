@@ -180,7 +180,7 @@ function layout(title, body, extraHead = '') {
             var error = document.getElementById('community-permission-error');
             if (!window.CommunityContacts || typeof window.CommunityContacts.requestContactsPermission !== 'function') {
               if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
-              if (error) error.textContent = 'This APK is missing its required Contacts bridge. Generate and install a fresh WhatsApp Bot APK from the latest App Builder project.';
+              if (error) error.textContent = 'This APK does not include the Contacts permission bridge. Rebuild the APK with Contacts enabled, then try again.';
               return false;
             }
             window.communitySettingsFormPending = form;
@@ -223,6 +223,9 @@ function layout(title, body, extraHead = '') {
           // being idle, so without this a click can look like it did
           // nothing when it's actually still working.
           document.addEventListener('submit', (e) => {
+            // A submit handler may deliberately cancel submission while waiting for a native
+            // Android permission callback. Do not show Loading or disable its button.
+            if (e.defaultPrevented) return;
             const form = e.target;
             const btn = form.querySelector('button[type="submit"], button:not([type])');
             if (btn && !btn.disabled) {
