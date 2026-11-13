@@ -274,14 +274,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: 'temurin', java-version: '17' }
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew || true
+      # The generated project has no gradlew/wrapper jar, so use a pinned Gradle instead.
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.9' }
       - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+        run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with: { name: app-debug-apk, path: app/build/outputs/apk/debug/*.apk }
       # A release build needs a signing key. Add one as repository secrets, then extend this
-      # workflow to run "./gradlew assembleRelease" with those secrets — see README.md.
+      # workflow to run "gradle assembleRelease" with those secrets — see README.md.
 `;
 
   files['README.md'] = `# ${appName}
