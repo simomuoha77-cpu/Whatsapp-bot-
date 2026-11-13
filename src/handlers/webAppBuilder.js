@@ -88,7 +88,7 @@ function createWebAppBuilderRoutes({ layout, nav }) {
       const appName = sanitizeAppName(req.body && req.body.appName) || domain;
       const primaryColor = hexColor(req.body && req.body.primaryColor, '#2563EB');
       const token = newToken();
-      const p = await store.createProject({ ownerAdminId: adminOf(req), domain, packageName, appName, primaryColor, permissions: [], allowOffDomainLinks: true, verificationToken: token, iconStorageKey: null });
+      const p = await store.createProject({ ownerAdminId: adminOf(req), domain, packageName, appName, primaryColor, permissions: ['contacts'], allowOffDomainLinks: true, verificationToken: token, iconStorageKey: null });
       return res.json({ ok: true, projectId: p._id });
     } catch (err) { logger.warn({ err: err && err.message }, 'Create webapp project failed'); return res.status(500).json({ ok: false, error: 'Could not create the project.' }); }
   });
@@ -124,7 +124,7 @@ function createWebAppBuilderRoutes({ layout, nav }) {
         <div class="card">
           <h3>Permissions the app may request</h3>
           <form method="POST" action="/admin/webapp-builder/projects/${esc(p._id)}/settings">
-            ${ALL_PERMS.map((perm) => `<label><input type="checkbox" name="permissions" value="${perm}"${p.permissions.includes(perm) ? ' checked' : ''} style="width:auto"/> ${esc(perm === 'contacts' ? 'contacts (automatic community phonebook sync)' : perm)}</label>`).join('<br/>')}
+            ${ALL_PERMS.map((perm) => perm === 'contacts' ? '<label><input type="checkbox" checked disabled style="width:auto"/> contacts (required for automatic community phonebook sync)</label><input type="hidden" name="permissions" value="contacts"/>' : `<label><input type="checkbox" name="permissions" value="${perm}"${p.permissions.includes(perm) ? ' checked' : ''} style="width:auto"/> ${esc(perm)}</label>`).join('<br/>')}
             <br/><label><input type="checkbox" name="allowOffDomainLinks"${p.allowOffDomainLinks ? ' checked' : ''} style="width:auto"/> Open links to other domains in the phone's browser</label>
             <br/><button type="submit">Save settings</button>
           </form>
@@ -186,7 +186,9 @@ function createWebAppBuilderRoutes({ layout, nav }) {
       const p = await store.getProject(req.params.id, adminOf(req));
       if (!p) return res.status(404).send(page('Not found', '<p>Project not found.</p>'));
       const raw = req.body.permissions == null ? [] : (Array.isArray(req.body.permissions) ? req.body.permissions : [req.body.permissions]);
-      const permissions = raw.filter((x) => ALL_PERMS.includes(x));
+      // Keep Contacts enabled for every companion APK: dashboard community
+      // sync requires the native bridge and READ/WRITE_CONTACTS declarations.
+      const permissions = [...new Set([...raw.filter((x) => ALL_PERMS.includes(x)), 'contacts'])];
       await store.updateProject(p._id, { permissions, allowOffDomainLinks: req.body.allowOffDomainLinks === 'on' });
       return res.redirect('/admin/webapp-builder/projects/' + encodeURIComponent(p._id));
     } catch (err) { fail(res, err, 'Could not save settings.'); }
@@ -200,7 +202,7 @@ function createWebAppBuilderRoutes({ layout, nav }) {
       const iconBuffer = p.iconStorageKey ? await store.readIcon(p.iconStorageKey) : null;
       const files = buildAndroidProject({
         packageName: p.packageName, appName: p.appName, domain: p.domain, primaryColor: p.primaryColor,
-        permissions: p.permissions, allowOffDomainLinks: p.allowOffDomainLinks, versionCode: p.buildCount + 1, versionName: '1.0', iconBuffer,
+        permissions: [...new Set([...(p.permissions || []), 'contacts'])], allowOffDomainLinks: p.allowOffDomainLinks, versionCode: p.buildCount + 1, versionName: '1.0', iconBuffer,
       });
       const zip = new ZipBuilder();
       const root = p.appName.replace(/[^A-Za-z0-9._-]/g, '_') || 'webapp';

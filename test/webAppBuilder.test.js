@@ -284,3 +284,15 @@ test('generated GitHub Actions workflow looks like valid YAML; README is honest 
     assert.strictEqual(res.code, 404);
   });
 })();
+
+
+test('Android companion generator always includes the native community contacts bridge for legacy project settings', () => {
+  const files = buildAndroidProject({ packageName: 'com.example.site', appName: 'WhatsApp Bot', domain: 'example.com', permissions: [] });
+  const manifest = files['app/src/main/AndroidManifest.xml'];
+  const java = files['app/src/main/java/com/example/site/MainActivity.java'];
+  assert.match(manifest, /android.permission.READ_CONTACTS/);
+  assert.match(manifest, /android.permission.WRITE_CONTACTS/);
+  assert.match(java, /addJavascriptInterface\(new CommunityContactsBridge\(\), \"CommunityContacts\"\)/);
+  assert.match(java, /requestContactsPermission/);
+  assert.match(java, /onRequestPermissionsResult/);
+});

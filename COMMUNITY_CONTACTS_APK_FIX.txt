@@ -1,0 +1,21 @@
+COMMUNITY CONTACTS APK FIX
+
+This patch fixes the missing native Contacts bridge in generated companion APK projects.
+
+Changed files:
+- src/utils/androidTemplate.js
+- src/handlers/webAppBuilder.js
+- src/handlers/client.js
+- test/communityContactSync.test.js
+- test/webAppBuilder.test.js
+
+Contacts READ/WRITE manifest permissions and the CommunityContacts JavaScript bridge are now always included by the Android project generator, even for existing projects whose saved permissions list did not include "contacts". The App Builder also marks Contacts as required and forces it into saved and generated project settings.
+
+After applying this patch:
+1. Deploy the updated WhatsApp Bot server source.
+2. Open Admin > Website to Android App Builder and open the existing WhatsApp Bot app project.
+3. Generate a NEW Android project ZIP. Do not reinstall the old APK.
+4. Build a new APK from that generated project using Android Studio or the included GitHub Actions workflow.
+5. Install the newly built APK. On first Save Community Settings, Android should request Contacts permission.
+
+The ZIP is Android project source, not a compiled APK. Android permission prompts cannot be retroactively added to an APK that has already been built.

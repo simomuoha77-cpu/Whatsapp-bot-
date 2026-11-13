@@ -20,12 +20,16 @@ test('community contact APK permission generates a native phonebook bridge', () 
   assert.match(java, /ContactsContract\.CommonDataKinds\.Phone\.CONTENT_ITEM_TYPE/);
 });
 
-test('community contact bridge is not exposed when contacts permission is omitted', () => {
+test('community contact bridge and manifest permissions are always included even if old project settings omitted contacts', () => {
   const files = buildAndroidProject({
     packageName: 'com.example.web', appName: 'Web App', domain: 'example.com', permissions: [],
   });
   const java = files['app/src/main/java/com/example/web/MainActivity.java'];
-  assert.doesNotMatch(java, /addJavascriptInterface\(new CommunityContactsBridge/);
+  const manifest = files['app/src/main/AndroidManifest.xml'];
+  assert.match(java, /addJavascriptInterface\(new CommunityContactsBridge\(\), \"CommunityContacts\"\)/);
+  assert.match(java, /requestContactsPermission/);
+  assert.match(manifest, /android.permission.READ_CONTACTS/);
+  assert.match(manifest, /android.permission.WRITE_CONTACTS/);
 });
 
  test('registration does not require community name or consent; dashboard has optional opt-in settings', () => {
@@ -47,7 +51,7 @@ test('save waits for native permission result and blocks silently missing APK br
   const fs = require('node:fs');
   const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
   assert.match(source, /submitCommunitySettings = function\(event, form\)/);
-  assert.match(source, /This APK does not include the Contacts permission bridge/);
+  assert.match(source, /This APK is missing its required Contacts bridge/);
   assert.match(source, /HTMLFormElement\.prototype\.submit\.call\(pending\)/);
   assert.match(source, /communityContactsPermissionResult = function\(granted\)/);
 });

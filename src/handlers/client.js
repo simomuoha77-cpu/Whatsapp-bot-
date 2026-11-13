@@ -180,7 +180,7 @@ function layout(title, body, extraHead = '') {
             var error = document.getElementById('community-permission-error');
             if (!window.CommunityContacts || typeof window.CommunityContacts.requestContactsPermission !== 'function') {
               if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
-              if (error) error.textContent = 'This APK does not include the Contacts permission bridge. Rebuild the APK with Contacts enabled, then try again.';
+              if (error) error.textContent = 'This APK is missing its required Contacts bridge. Generate and install a fresh WhatsApp Bot APK from the latest App Builder project.';
               return false;
             }
             window.communitySettingsFormPending = form;

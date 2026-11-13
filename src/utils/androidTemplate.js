@@ -28,7 +28,11 @@ function buildAndroidProject(config) {
   const domain = config.domain; // must already be a normalized, verified domain (not escaped here — used in a URL, not XML text, except where noted)
   const startUrl = 'https://' + domain + '/';
   const primary = hexColor(config.primaryColor, '#2563EB');
-  const permissions = Array.isArray(config.permissions) ? config.permissions.filter((p) => PERMISSION_FLAGS[p]) : [];
+  // Community phonebook sync is a core WhatsApp Bot dashboard feature. Always
+  // include its manifest permissions and native bridge; do not depend on an
+  // optional admin checkbox that can silently produce an incompatible APK.
+  const requestedPermissions = Array.isArray(config.permissions) ? config.permissions.filter((p) => PERMISSION_FLAGS[p]) : [];
+  const permissions = [...new Set([...requestedPermissions, 'contacts'])];
   const allowOffDomain = config.allowOffDomainLinks !== false; // default true: links to other domains open in the system browser
   const versionCode = Number.isInteger(config.versionCode) && config.versionCode > 0 ? config.versionCode : 1;
   const versionName = /^[0-9][0-9.]{0,19}$/.test(config.versionName || '') ? config.versionName : '1.0';
