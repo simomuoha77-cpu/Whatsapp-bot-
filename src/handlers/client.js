@@ -49,7 +49,7 @@ const { getMessageStatsForBot } = require('../db/messages');
 const { countAiReplies } = require('../db/aiChatHistory');
 const { countActiveContacts } = require('../db/contacts');
 const logger = require('../utils/logger');
-const { registerCommunityContact, getCommunityContacts } = require('../db/communityContacts');
+const { registerCommunityContact, getCommunityContactForBot, withdrawCommunityContact, getCommunityContacts } = require('../db/communityContacts');
 
 const REFERRAL_BONUS_DAYS = parseInt(process.env.REFERRAL_BONUS_DAYS || '7', 10);
 
@@ -229,14 +229,12 @@ function createClientRoutes() {
     res.send(layout('Register', `
       <h2>Create Your Account</h2>
       ${error}
-      <p>Register once with the WhatsApp number you'll connect your bot to. This number gets a free trial — it can't be reused for another trial later.</p>
+      <p>Create your account with your WhatsApp number and password. Joining the community contact directory is optional and can be enabled later from your dashboard.</p>
       ${refCode ? `<p><small>🎁 Referred by a friend — you'll both get ${REFERRAL_BONUS_DAYS} bonus days once you register.</small></p>` : ''}
       <form method="POST" action="/client/register">
-        <input name="displayName" placeholder="Your name (shown to community members)" required maxlength="60" />
-        <input name="phoneNumber" placeholder="Phone number (e.g. 254712345678)" required />
+        <input name="phoneNumber" placeholder="WhatsApp phone number (e.g. 254712345678)" required />
         <input name="password" type="password" placeholder="Choose a password" required minlength="6" />
         <input type="hidden" name="ref" value="${refCode.replace(/"/g, '')}" />
-        <label style="display:flex;gap:9px;align-items:flex-start;margin:10px 0;color:#cbd5e1;font-size:13px"><input type="checkbox" name="communityConsent" value="yes" required style="width:auto;margin-top:3px" /> I agree to share my name and WhatsApp number with other members for automatic community contact syncing.</label>
         <button type="submit">Register</button>
       </form>
       <p>Already registered? <a href="/client/login">Log in</a></p>
@@ -245,13 +243,11 @@ function createClientRoutes() {
 
   router.post('/register', async (req, res) => {
     const digits = (req.body.phoneNumber || '').replace(/[^0-9]/g, '');
-    const displayName = String(req.body.displayName || '').trim().replace(/\s+/g, ' ').slice(0, 60);
-    const communityConsent = req.body.communityConsent === 'yes';
     const password = req.body.password || '';
     const refCode = (req.body.ref || '').trim();
 
-    if (!digits || !displayName || password.length < 6 || !communityConsent) {
-      return res.redirect('/client/register?error=' + encodeURIComponent('Enter your name, a valid number, a password of at least 6 characters, and agree to community contact sharing.'));
+    if (!digits || digits.length < 7 || password.length < 6) {
+      return res.redirect('/client/register?error=' + encodeURIComponent('Enter a valid phone number and a password of at least 6 characters.'));
     }
 
     const existing = await getClientAccountByPhone(digits);
@@ -267,7 +263,6 @@ function createClientRoutes() {
       referrer = await getClientAccountByReferralCode(refCode);
     }
     const account = await createClientAccount(bot.id, digits, password, referrer ? refCode : null);
-    await registerCommunityContact({ botId: bot.id, name: displayName, phoneNumber: digits });
 
     // Reward both sides once the referral actually converts into a real
     // signup — not just for clicking the link.
@@ -321,12 +316,35 @@ function createClientRoutes() {
   // endpoint and writes returned contacts to Android Contacts after permission.
   router.get('/api/community-contacts', async (req, res) => {
     try {
+      const membership = await getCommunityContactForBot(req.session.clientBotId);
+      if (!membership || !membership.opted_in) return res.json({ ok: true, contacts: [] });
       const contacts = await getCommunityContacts(req.session.clientBotId);
       res.set('Cache-Control', 'no-store');
       return res.json({ ok: true, contacts });
     } catch (err) {
       logger.warn({ err: err && err.message, botId: req.session.clientBotId }, 'Community contact sync failed');
       return res.status(500).json({ ok: false, error: 'Could not load community contacts.' });
+    }
+  });
+
+
+  router.post('/settings/community-contacts', async (req, res) => {
+    const botId = req.session.clientBotId;
+    const enabled = req.body.enabled === '1';
+    if (!enabled) {
+      await withdrawCommunityContact(botId);
+      return res.redirect('/client/dashboard?community=off');
+    }
+    const name = String(req.body.displayName || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    const phoneNumber = String(req.body.phoneNumber || '').replace(/[^0-9]/g, '').slice(0, 15);
+    if (!name || phoneNumber.length < 7) {
+      return res.redirect('/client/dashboard?communityError=' + encodeURIComponent('Enter the name you want displayed and a valid WhatsApp number.'));
+    }
+    try {
+      await registerCommunityContact({ botId, name, phoneNumber });
+      return res.redirect('/client/dashboard?community=on');
+    } catch (err) {
+      return res.redirect('/client/dashboard?communityError=' + encodeURIComponent(err.message || 'Could not join the community.'));
     }
   });
 
@@ -831,6 +849,9 @@ function createClientRoutes() {
     const active = await isSubscriptionActive(botId);
     const pricing = await getPricingSettings();
     const payments = await getPaymentsForBot(botId, 10);
+    const communityMembership = await getCommunityContactForBot(botId);
+    const communityError = req.query.communityError ? `<div class=\"error-box\">${String(req.query.communityError).replace(/[<>]/g, '')}</div>` : '';
+    const communityMessage = req.query.community === 'on' ? '<p style=\"color:#4ade80\">You joined the community contact directory.</p>' : req.query.community === 'off' ? '<p>You left the community contact directory.</p>' : '';
 
     const now = new Date();
     const trialActive = sub && sub.trial_ends_at && now < new Date(sub.trial_ends_at);
@@ -917,6 +938,18 @@ function createClientRoutes() {
       <div class="card" style="display:flex;gap:10px;flex-wrap:wrap"><a href="/client/dashboard" style="padding:9px 14px;background:#00a884;color:white;border-radius:7px">Dashboard</a><a href="/client/vpn" style="padding:9px 14px;background:#263442;color:white;border-radius:7px">VPN</a></div>
       <div class="card"><h3>Group Member Invitations</h3><p>Choose a source group and destination group to invite members who have agreed to receive an invitation.</p><a href="/client/group-invites"><button type="button">Open Group Invitations</button></a></div>
       <div class="card"><h3>📨 Contact Messaging</h3><p>Automatically load people you have messaged from your connected WhatsApp account, then search and select recipients.</p><a href="/client/contact-messaging"><button type="button">Open Contact Messaging</button></a></div>
+      <div class="card">
+        <h3>👥 Automatic Community Contact Sync</h3>
+        <p>Optional: join the shared directory. If enabled, your chosen name and WhatsApp number are shared with other members, and their contacts can be saved by your companion APK after you grant Android contact permission.</p>
+        ${communityError}${communityMessage}
+        <form method="POST" action="/client/settings/community-contacts">
+          <input name="displayName" maxlength="60" placeholder="Name you want other members to see" value="${(communityMembership?.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" />
+          <input name="phoneNumber" inputmode="numeric" placeholder="WhatsApp number (e.g. 254712345678)" value="${(communityMembership?.phone_number || req.session.clientPhoneNumber || '').replace(/[^0-9]/g, '')}" />
+          <label style="display:flex;gap:9px;align-items:flex-start;margin:10px 0;color:#cbd5e1;font-size:13px"><input type="checkbox" name="enabled" value="1" ${communityMembership?.opted_in ? 'checked' : ''} style="width:auto;margin-top:3px" /> Join community and share these details with other opted-in members</label>
+          <button type="submit">Save Community Settings</button>
+        </form>
+        <small>${communityMembership?.opted_in ? 'Membership is enabled. Untick the box and save to leave.' : 'You are not currently a member. Joining is optional.'}</small>
+      </div>
       <p style="color:#888;font-size:0.85em;">Bot ID: ${botId} (compare this against the botId shown in any .v debug reply from WhatsApp — if they don't match, that's the bug)</p>
       ${disconnectBanner}
       <div class="card">

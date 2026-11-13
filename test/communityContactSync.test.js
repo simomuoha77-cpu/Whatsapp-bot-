@@ -26,3 +26,16 @@ test('community contact bridge is not exposed when contacts permission is omitte
   const java = files['app/src/main/java/com/example/web/MainActivity.java'];
   assert.doesNotMatch(java, /addJavascriptInterface\(new CommunityContactsBridge/);
 });
+
+ test('registration does not require community name or consent; dashboard has optional opt-in settings', () => {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
+  const registerView = source.slice(source.indexOf("router.get('/register'"), source.indexOf("router.post('/register'"));
+  const registerPost = source.slice(source.indexOf("router.post('/register'"), source.indexOf("router.get('/login'"));
+  assert.doesNotMatch(registerView, /name="displayName"|communityConsent/);
+  assert.doesNotMatch(registerPost, /communityConsent|registerCommunityContact/);
+  assert.match(source, /router\.post\('\/settings\/community-contacts'/);
+  assert.match(source, /Automatic Community Contact Sync/);
+  assert.match(source, /name="displayName"/);
+  assert.match(source, /name="enabled"/);
+ });
