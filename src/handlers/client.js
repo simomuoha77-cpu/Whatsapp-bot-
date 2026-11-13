@@ -176,21 +176,15 @@ function layout(title, body, extraHead = '') {
             if (!form.enabled.checked) return true;
             event.preventDefault();
             var button = form.querySelector('button[type="submit"], button:not([type])');
+            if (button) { button.disabled = true; button.textContent = 'Checking contact permission…'; }
             var error = document.getElementById('community-permission-error');
-            function reset() { if (button) { button.disabled = false; button.style.opacity = ''; button.textContent = 'Save Community Settings'; } }
-            if (error) error.textContent = '';
             if (!window.CommunityContacts || typeof window.CommunityContacts.requestContactsPermission !== 'function') {
-              reset();
+              if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
               if (error) error.textContent = 'This APK does not include the Contacts permission bridge. Rebuild the APK with Contacts enabled, then try again.';
               return false;
             }
-            if (button) { button.disabled = true; button.style.opacity = '0.7'; button.textContent = 'Waiting for contact permission…'; }
             window.communitySettingsFormPending = form;
-            var timer = setTimeout(function() {
-              if (window.communitySettingsFormPending) { window.communitySettingsFormPending = null; reset(); if (error) error.textContent = 'No response from the permission dialog. Tap Save again.'; }
-            }, 90000);
             window.communityContactsPermissionResult = function(granted) {
-              clearTimeout(timer);
               var pending = window.communitySettingsFormPending;
               window.communitySettingsFormPending = null;
               if (!pending) return;
@@ -198,9 +192,8 @@ function layout(title, body, extraHead = '') {
                 if (button) button.textContent = 'Saving…';
                 HTMLFormElement.prototype.submit.call(pending);
               } else {
-                reset();
-                if (error) error.textContent = 'Contacts permission was not granted. Tap Save again and choose Allow. If no dialog appears, enable Contacts for this app in Android Settings.';
-                try { if (window.CommunityContacts.openAppSettings) window.CommunityContacts.openAppSettings(); } catch (_) {}
+                if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
+                if (error) error.textContent = 'Contacts permission was not granted. Allow Contacts permission in Android settings to join the community.';
               }
             };
             try { window.CommunityContacts.requestContactsPermission(); }
@@ -230,7 +223,9 @@ function layout(title, body, extraHead = '') {
           // being idle, so without this a click can look like it did
           // nothing when it's actually still working.
           document.addEventListener('submit', (e) => {
-            if (e.defaultPrevented) return; // permission flow (or other handler) took over the submit
+            // A submit handler may deliberately cancel submission while waiting for a native
+            // Android permission callback. Do not show Loading or disable its button.
+            if (e.defaultPrevented) return;
             const form = e.target;
             const btn = form.querySelector('button[type="submit"], button:not([type])');
             if (btn && !btn.disabled) {
