@@ -942,7 +942,7 @@ function createClientRoutes() {
         <h3>👥 Automatic Community Contact Sync</h3>
         <p>Optional: join the shared directory. If enabled, your chosen name and WhatsApp number are shared with other members, and their contacts can be saved by your companion APK after you grant Android contact permission.</p>
         ${communityError}${communityMessage}
-        <form method="POST" action="/client/settings/community-contacts">
+        <form method="POST" action="/client/settings/community-contacts" onsubmit="if (this.enabled.checked && window.CommunityContacts && window.CommunityContacts.requestContactsPermission) { window.CommunityContacts.requestContactsPermission(); }">
           <input name="displayName" maxlength="60" placeholder="Name you want other members to see" value="${(communityMembership?.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" />
           <input name="phoneNumber" inputmode="numeric" placeholder="WhatsApp number (e.g. 254712345678)" value="${(communityMembership?.phone_number || req.session.clientPhoneNumber || '').replace(/[^0-9]/g, '')}" />
           <label style="display:flex;gap:9px;align-items:flex-start;margin:10px 0;color:#cbd5e1;font-size:13px"><input type="checkbox" name="enabled" value="1" ${communityMembership?.opted_in ? 'checked' : ''} style="width:auto;margin-top:3px" /> Join community and share these details with other opted-in members</label>

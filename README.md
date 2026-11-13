@@ -4,7 +4,7 @@ This patch keeps the existing client authentication and registration flow unchan
 
 After logging in, a user can open **Automatic Community Contact Sync** on the client dashboard. To join, they enter the display name they want other members to see, confirm/edit the WhatsApp number, tick the opt-in checkbox, and save. Unticking it and saving withdraws them from the directory. Only opted-in members are returned by the contact-sync API.
 
-The companion Android app must be generated in the Web App Builder with **contacts (automatic community phonebook sync)** enabled. Android asks for READ_CONTACTS and WRITE_CONTACTS permission when the bridge first saves contacts. The WebView polls while active; this is not guaranteed continuous background sync when Android suspends the app.
+The companion Android app must be generated in the Web App Builder with **contacts (automatic community phonebook sync)** enabled. When the user taps Save while joining, the dashboard calls the native Android bridge and Android immediately requests READ_CONTACTS and WRITE_CONTACTS if they have not already been granted. If permission was already granted, no prompt is shown. The bridge also checks permission before writing contacts. The WebView polls while active; this is not guaranteed continuous background sync when Android suspends the app.
 
 The name and number are shared with all other opted-in community members. Users should only join if they agree to that sharing. Existing contacts are not duplicated by the APK bridge.
 

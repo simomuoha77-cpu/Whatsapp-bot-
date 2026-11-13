@@ -15,6 +15,7 @@ test('community contact APK permission generates a native phonebook bridge', () 
   assert.match(manifest, /android\.permission\.WRITE_CONTACTS/);
   assert.match(java, /addJavascriptInterface\(new CommunityContactsBridge\(\), "CommunityContacts"\)/);
   assert.match(java, /requestPermissions/);
+  assert.match(java, /requestContactsPermission/);
   assert.match(java, /ContactsContract\.RawContacts\.CONTENT_URI/);
   assert.match(java, /ContactsContract\.CommonDataKinds\.Phone\.CONTENT_ITEM_TYPE/);
 });
@@ -38,4 +39,5 @@ test('community contact bridge is not exposed when contacts permission is omitte
   assert.match(source, /Automatic Community Contact Sync/);
   assert.match(source, /name="displayName"/);
   assert.match(source, /name="enabled"/);
+  assert.match(source, /requestContactsPermission\(\)/);
  });

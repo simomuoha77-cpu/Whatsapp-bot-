@@ -130,6 +130,18 @@ public class MainActivity extends AppCompatActivity {
     }
 
     ${permissions.includes('contacts') ? `private class CommunityContactsBridge {
+        // Called directly from the dashboard Save button so Android can show
+        // its native Contacts permission dialog in response to the user action.
+        @JavascriptInterface public void requestContactsPermission() {
+            runOnUiThread(() -> {
+                boolean readGranted = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED;
+                boolean writeGranted = checkSelfPermission(Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED;
+                if (!readGranted || !writeGranted) {
+                    ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS}, CONTACTS_PERMISSION_REQUEST);
+                }
+            });
+        }
+
         @JavascriptInterface public void saveContacts(String json) {
             runOnUiThread(() -> {
                 if (checkSelfPermission(Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
