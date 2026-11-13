@@ -211,3 +211,17 @@ test('page prunes only after a complete successful pass and only for participati
   assert.match(source, /member: false/);
   assert.match(source, /Android cannot save community contacts to your phonebook until you allow it/);
 });
+
+test('manifest only references the launcher icon when an icon file is generated', () => {
+  const none = buildAndroidProject({ packageName: 'com.example.n', appName: 'N', domain: 'example.com' });
+  assert.doesNotMatch(none['app/src/main/AndroidManifest.xml'], /ic_launcher/);
+  const png = Buffer.from('89504e470d0a1a0a', 'hex');
+  const withIcon = buildAndroidProject({ packageName: 'com.example.n', appName: 'N', domain: 'example.com', iconBuffer: png });
+  assert.match(withIcon['app/src/main/AndroidManifest.xml'], /@mipmap\/ic_launcher/);
+  assert.ok(withIcon['app/src/main/res/mipmap-mdpi/ic_launcher.png']);
+});
+
+test('app/build.gradle pins the Kotlin BOM to avoid duplicate-class build failures', () => {
+  const files = buildAndroidProject({ packageName: 'com.example.k', appName: 'K', domain: 'example.com' });
+  assert.match(files['app/build.gradle'], /platform\('org\.jetbrains\.kotlin:kotlin-bom:1\.8\.22'\)/);
+});
