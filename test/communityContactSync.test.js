@@ -220,10 +220,45 @@ test('manifest only references the launcher icon when an icon file is generated'
   const png = Buffer.from('89504e470d0a1a0a', 'hex');
   const withIcon = buildAndroidProject({ packageName: 'com.example.n', appName: 'N', domain: 'example.com', iconBuffer: png });
   assert.match(withIcon['app/src/main/AndroidManifest.xml'], /@mipmap\/ic_launcher/);
+  assert.doesNotMatch(withIcon['app/src/main/AndroidManifest.xml'], /\\n/, 'manifest must not contain a literal backslash-n');
+  assert.match(withIcon['app/src/main/AndroidManifest.xml'], /android:icon="@mipmap\/ic_launcher"\s*\n\s*android:roundIcon="@mipmap\/ic_launcher"/);
   assert.ok(withIcon['app/src/main/res/mipmap-mdpi/ic_launcher.png']);
 });
 
 test('app/build.gradle pins the Kotlin BOM to avoid duplicate-class build failures', () => {
   const files = buildAndroidProject({ packageName: 'com.example.k', appName: 'K', domain: 'example.com' });
   assert.match(files['app/build.gradle'], /platform\('org\.jetbrains\.kotlin:kotlin-bom:1\.8\.22'\)/);
+});
+
+test('dashboard offers the admin-uploaded APK behind login, hidden inside the app WebView', () => {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
+  const auth = source.indexOf('router.use(requireClientAuth)');
+  assert.ok(source.indexOf("router.get('/download-apk'") > auth, 'download route must be behind client auth');
+  assert.match(source, /application\/vnd\.android\.package-archive/);
+  assert.match(source, /openReleaseDownload\(\)/);
+  assert.match(source, /const apkCard = !appRelease \? ''/);
+  assert.match(source, /if \(!inAppWebView\)/);
+  assert.match(source, /\$\{apkCard\}/);
+});
+
+test('admin APK upload: only real APKs are accepted', () => {
+  const { apkProblem } = require('../src/utils/apkCheck');
+  const zipLike = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(2048), Buffer.from('AndroidManifest.xml')]);
+  assert.equal(apkProblem(zipLike), null);
+  assert.match(apkProblem(Buffer.alloc(10)), /too small/);
+  assert.match(apkProblem(Buffer.alloc(4096, 1)), /not an APK/);
+  const zipNoManifest = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(4096)]);
+  assert.match(apkProblem(zipNoManifest), /AndroidManifest/);
+});
+
+test('admin APK upload is mounted behind platform auth and linked in the admin nav', () => {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(require.resolve('../src/handlers/admin'), 'utf8');
+  assert.ok(source.indexOf("router.use('/app-download'") > source.indexOf('router.use(requirePlatformAuth)'));
+  assert.match(source, /\/admin\/app-download">App Download/);
+  const handler = fs.readFileSync(require.resolve('../src/handlers/appDownload'), 'utf8');
+  assert.match(handler, /sameOrigin\(req\)/);
+  assert.match(handler, /router\.post\('\/upload'/);
+  assert.match(handler, /router\.post\('\/delete'/);
 });

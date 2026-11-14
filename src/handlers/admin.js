@@ -41,6 +41,7 @@ const { getPaymentsForBot } = require('../db/payments');
 const { startBotSocket, getBotState, deleteBotSession, enqueueConnect } = require('../utils/botManager');
 const { refreshScheduler, buildStatusJidList } = require('./scheduler');
 const { createApkStudioRoutes } = require('./apkStudio');
+const { createAppDownloadAdminRoutes } = require('./appDownload');
 const { getVpnPackages, saveVpnPackage, getVpnInventoryForAdmin, updateAvailableVpnUri, deleteAvailableVpnUri } = require('../db/vpn');
 
 function layout(title, body) {
@@ -99,7 +100,7 @@ function layout(title, body) {
 }
 
 function nav() {
-  return `<nav><a href="/admin">Clients</a><a href="/admin/vpn">VPN Packages</a><a href="/admin/apk-studio">APK Studio</a><a href="/admin/logout">Logout</a></nav>`;
+  return `<nav><a href="/admin">Clients</a><a href="/admin/vpn">VPN Packages</a><a href="/admin/apk-studio">APK Studio</a><a href="/admin/app-download">App Download</a><a href="/admin/logout">Logout</a></nav>`;
 }
 
 // A separate layout from the generic admin one above — full-bleed, dark
@@ -183,6 +184,7 @@ function createAdminRoutes() {
 
   // APK Studio (admin-only; mounted after auth)
   router.use('/apk-studio', createApkStudioRoutes({ layout, nav }));
+  router.use('/app-download', createAppDownloadAdminRoutes({ layout, nav }));
 
   // --- VPN package management (seven day packages) ---
   router.get('/vpn', async (req, res) => {
