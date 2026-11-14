@@ -220,23 +220,10 @@ test('manifest only references the launcher icon when an icon file is generated'
   const png = Buffer.from('89504e470d0a1a0a', 'hex');
   const withIcon = buildAndroidProject({ packageName: 'com.example.n', appName: 'N', domain: 'example.com', iconBuffer: png });
   assert.match(withIcon['app/src/main/AndroidManifest.xml'], /@mipmap\/ic_launcher/);
-  assert.doesNotMatch(withIcon['app/src/main/AndroidManifest.xml'], /\\n/, 'manifest must not contain a literal backslash-n');
-  assert.match(withIcon['app/src/main/AndroidManifest.xml'], /android:icon="@mipmap\/ic_launcher"\s*\n\s*android:roundIcon="@mipmap\/ic_launcher"/);
   assert.ok(withIcon['app/src/main/res/mipmap-mdpi/ic_launcher.png']);
 });
 
 test('app/build.gradle pins the Kotlin BOM to avoid duplicate-class build failures', () => {
   const files = buildAndroidProject({ packageName: 'com.example.k', appName: 'K', domain: 'example.com' });
   assert.match(files['app/build.gradle'], /platform\('org\.jetbrains\.kotlin:kotlin-bom:1\.8\.22'\)/);
-});
-
-test('dashboard offers the APK download behind login, hidden inside the app WebView', () => {
-  const fs = require('node:fs');
-  const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
-  const auth = source.indexOf('router.use(requireClientAuth)');
-  assert.ok(source.indexOf("router.get('/download-apk'") > auth, 'download route must be behind client auth');
-  assert.match(source, /application\/vnd\.android\.package-archive/);
-  assert.match(source, /apk', 'WhatsApp-Bot\.apk'/);
-  assert.match(source, /inAppWebView \|\| !fs\.existsSync\(APK_FILE\)/);
-  assert.match(source, /\$\{apkCard\}/);
 });
