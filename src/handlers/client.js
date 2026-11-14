@@ -190,7 +190,22 @@ function layout(title, body, extraHead = '') {
               if (!pending) return;
               if (granted) {
                 if (button) button.textContent = 'Saving…';
-                HTMLFormElement.prototype.submit.call(pending);
+                // Save in the background so a server/network failure shows a message here
+                // (with the status code) instead of a dead WebView error page. "Saved" only
+                // appears after the server confirms, because the next page is the server's own reply.
+                fetch(pending.action, {
+                  method: 'POST',
+                  body: new URLSearchParams(new FormData(pending)),
+                  credentials: 'same-origin',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                  redirect: 'follow'
+                }).then(function (r) {
+                  if (!r.ok) throw new Error('server returned ' + r.status);
+                  window.location.href = (r.url && r.url.indexOf('/client/dashboard') !== -1) ? r.url : '/client/dashboard';
+                }).catch(function (e) {
+                  if (button) { button.disabled = false; button.style.opacity = ''; button.textContent = 'Save Community Settings'; }
+                  if (error) error.textContent = 'Could not save (' + (e && e.message ? e.message : 'network error') + '). Nothing was saved. Tap Save to try again.';
+                });
               } else {
                 if (button) { button.disabled = false; button.textContent = 'Save Community Settings'; }
                 if (error) error.textContent = permanent

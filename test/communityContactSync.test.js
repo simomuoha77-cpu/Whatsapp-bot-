@@ -178,7 +178,9 @@ test('save waits for native permission result and blocks silently missing APK br
   const source = fs.readFileSync(require.resolve('../src/handlers/client'), 'utf8');
   assert.match(source, /submitCommunitySettings = function\(event, form\)/);
   assert.match(source, /This APK does not include the Contacts permission bridge/);
-  assert.match(source, /HTMLFormElement\.prototype\.submit\.call\(pending\)/);
+  assert.match(source, /fetch\(pending\.action, \{\s*method: 'POST'/);
+  assert.match(source, /if \(!r\.ok\) throw new Error\('server returned ' \+ r\.status\)/);
+  assert.match(source, /Nothing was saved\. Tap Save to try again\./);
   assert.match(source, /communityContactsPermissionResult = function\(granted, permanent\)/);
 });
 
