@@ -29,6 +29,15 @@ async function saveRelease(buffer, { filename, label, uploadedBy }) {
   return getRelease();
 }
 
+async function readReleaseBuffer() {
+  const release = await getRelease();
+  if (!release) return null;
+  const stream = (await bucket()).openDownloadStream(new ObjectId(release.fileId));
+  const chunks = [];
+  await new Promise((resolve, reject) => stream.on('data', (c) => chunks.push(c)).on('error', reject).on('end', resolve));
+  return { release, buffer: Buffer.concat(chunks) };
+}
+
 async function openReleaseDownload() {
   const release = await getRelease();
   if (!release) return null;
@@ -43,4 +52,4 @@ async function deleteRelease() {
   try { await (await bucket()).delete(new ObjectId(previous.fileId)); } catch (e) { /* already gone */ }
 }
 
-module.exports = { getRelease, saveRelease, openReleaseDownload, deleteRelease };
+module.exports = { getRelease, saveRelease, openReleaseDownload, readReleaseBuffer, deleteRelease };

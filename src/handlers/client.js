@@ -41,7 +41,7 @@ const {
 } = require('../db/scheduledGroupPosts');
 const { handleScheduledMediaUpload, mediaTypeForFile } = require('../utils/mediaUpload');
 const { saveBufferToGridFS } = require('../utils/gridfsMedia');
-const { getRelease: getAppRelease, openReleaseDownload } = require('../db/appRelease');
+const { getRelease: getAppRelease, readReleaseBuffer } = require('../db/appRelease');
 const { resolveSchedule } = require('../utils/scheduleTime');
 const { refreshScheduler, buildStatusJidList } = require('./scheduler');
 const { getProductsForBot, addProduct, deleteProduct } = require('../db/products');
@@ -401,20 +401,34 @@ function createClientRoutes() {
   });
 
   // Android app download for logged-in clients. The admin uploads the APK at /admin/app-download.
+  // The file is kept in memory (and warmed when the dashboard renders the card) so the tap
+  // responds immediately instead of waiting on a database read.
+  let apkCache = null;   // { fileId, buffer }
+  let apkLoading = null; // { fileId, promise }
+  async function getApkBuffer(release) {
+    if (apkCache && apkCache.fileId === release.fileId) return apkCache.buffer;
+    if (apkLoading && apkLoading.fileId === release.fileId) return apkLoading.promise;
+    const promise = (async () => {
+      const loaded = await readReleaseBuffer();
+      if (!loaded) return null;
+      if (loaded.buffer.length <= 40 * 1048576) apkCache = { fileId: loaded.release.fileId, buffer: loaded.buffer };
+      return loaded.buffer;
+    })();
+    apkLoading = { fileId: release.fileId, promise };
+    try { return await promise; } finally { if (apkLoading && apkLoading.promise === promise) apkLoading = null; }
+  }
   router.get('/download-apk', async (req, res) => {
     try {
-      const dl = await openReleaseDownload();
-      if (!dl) return res.status(404).type('text/plain').send('The Android app has not been published yet.');
+      const release = await getAppRelease();
+      const buffer = release ? await getApkBuffer(release) : null;
+      if (!buffer) return res.status(404).type('text/plain').send('The Android app has not been published yet.');
       res.set({
         'Content-Type': 'application/vnd.android.package-archive',
         'Content-Disposition': 'attachment; filename="WhatsApp-Bot.apk"',
-        'Content-Length': String(dl.release.size),
+        'Content-Length': String(buffer.length),
         'Cache-Control': 'no-store',
       });
-      dl.stream.on('error', (err) => {
-        logger.warn({ err: err && err.message }, 'APK download stream failed');
-        if (!res.headersSent) res.status(500).end(); else res.destroy();
-      }).pipe(res);
+      return res.end(buffer);
     } catch (err) {
       logger.warn({ err: err && err.message }, 'APK download failed');
       return res.status(500).type('text/plain').send('Could not download the app right now. Try again.');
@@ -1038,8 +1052,37 @@ function createClientRoutes() {
     const inAppWebView = /; wv\)/.test(String(req.get('user-agent') || ''));
     let appRelease = null;
     if (!inAppWebView) { try { appRelease = await getAppRelease(); } catch (e) { appRelease = null; } }
+    if (appRelease) getApkBuffer(appRelease).catch(() => {}); // warm the cache so the first tap is instant
     const apkSize = appRelease && appRelease.size ? (appRelease.size / 1048576).toFixed(1) + ' MB' : '';
-    const apkCard = !appRelease ? '' : '<div class="card"><h3>📱 Android App</h3><p>Install the WhatsApp Bot app on your phone. It can also save community members to your contacts when you allow Contacts permission.</p><a href="/client/download-apk" style="display:block;text-align:center;padding:12px;background:#00a884;color:#06281f;border-radius:7px;font-weight:600">Download Android App' + (apkSize ? ' (' + apkSize + ')' : '') + '</a><small>After downloading, open the file and allow installing from this browser if Android asks.</small></div>';
+    const apkLabel = 'Download Android App' + (apkSize ? ' (' + apkSize + ')' : '');
+    const apkCard = !appRelease ? '' : `<div class="card"><h3>📱 Android App</h3><p>Install the WhatsApp Bot app on your phone. It can also save community members to your contacts when you allow Contacts permission.</p>
+      <a id="apk-dl" href="/client/download-apk" style="display:block;text-align:center;padding:12px;background:#00a884;color:#06281f;border-radius:7px;font-weight:600">${apkLabel}</a>
+      <p id="apk-dl-status" role="status" style="color:#4ade80;margin:10px 0 0"></p>
+      <small>After downloading, open the file and allow installing from this browser if Android asks.</small>
+      <iframe id="apk-dl-frame" title="download" style="display:none;width:0;height:0;border:0"></iframe>
+      <script>
+        (function () {
+          var a = document.getElementById('apk-dl'), st = document.getElementById('apk-dl-status'), fr = document.getElementById('apk-dl-frame');
+          if (!a) return;
+          var label = a.textContent, timer = null;
+          function reset() { a.textContent = label; a.style.opacity = ''; a.dataset.busy = ''; }
+          // A download that works never fires onload; a server error page does, so show it here.
+          fr.onload = function () {
+            var msg = '';
+            try { msg = (fr.contentDocument && fr.contentDocument.body && fr.contentDocument.body.innerText || '').trim(); } catch (e) {}
+            if (!msg) return;
+            clearTimeout(timer); reset(); st.style.color = '#fca5a5'; st.textContent = msg;
+          };
+          a.addEventListener('click', function (e) {
+            e.preventDefault();
+            if (a.dataset.busy) return;
+            a.dataset.busy = '1'; a.style.opacity = '0.7'; a.textContent = 'Starting download…';
+            st.style.color = '#4ade80'; st.textContent = 'Download started. Check your notifications, then tap the file to install.';
+            fr.src = '/client/download-apk?t=' + Date.now(); // loads in a hidden frame: this page never navigates away
+            timer = setTimeout(reset, 4000);
+          });
+        })();
+      </script></div>`;
 
     res.send(layout('Dashboard', `
       <h2>Your Bot</h2>

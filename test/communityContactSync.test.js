@@ -236,7 +236,10 @@ test('dashboard offers the admin-uploaded APK behind login, hidden inside the ap
   const auth = source.indexOf('router.use(requireClientAuth)');
   assert.ok(source.indexOf("router.get('/download-apk'") > auth, 'download route must be behind client auth');
   assert.match(source, /application\/vnd\.android\.package-archive/);
-  assert.match(source, /openReleaseDownload\(\)/);
+  assert.match(source, /getApkBuffer\(release\)/);
+  assert.match(source, /getApkBuffer\(appRelease\)\.catch/);
+  assert.match(source, /fr\.src = '\/client\/download-apk\?t='/);
+  assert.match(source, /a\.addEventListener\('click', function \(e\) \{\s*e\.preventDefault\(\)/);
   assert.match(source, /const apkCard = !appRelease \? ''/);
   assert.match(source, /if \(!inAppWebView\)/);
   assert.match(source, /\$\{apkCard\}/);
