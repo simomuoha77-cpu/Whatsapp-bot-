@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const { normalizePhoneNumber } = require('../utils/phoneNumber');
 const QRCode = require('qrcode');
@@ -397,6 +399,15 @@ function createClientRoutes() {
       logger.warn({ err: err && err.message, botId: req.session.clientBotId }, 'Community contact sync failed');
       return res.status(500).json({ ok: false, error: 'Could not load community contacts.' });
     }
+  });
+
+  // Android app download for logged-in clients. The APK is built by the "Build Android APK"
+  // GitHub workflow, which commits it to apk/WhatsApp-Bot.apk in this repo.
+  const APK_FILE = path.join(__dirname, '..', '..', 'apk', 'WhatsApp-Bot.apk');
+  router.get('/download-apk', (req, res) => {
+    if (!fs.existsSync(APK_FILE)) return res.status(404).type('text/plain').send('The Android app has not been published yet.');
+    res.set('Cache-Control', 'no-store');
+    return res.download(APK_FILE, 'WhatsApp-Bot.apk', { headers: { 'Content-Type': 'application/vnd.android.package-archive' } });
   });
 
   router.post('/settings/community-contacts/delete', async (req, res) => {
@@ -1013,10 +1024,14 @@ function createClientRoutes() {
       </div>
     `).join('') || '<p>No keyword responses set up yet.</p>';
 
+    const inAppWebView = /; wv\)/.test(String(req.get('user-agent') || ''));
+    const apkCard = (inAppWebView || !fs.existsSync(APK_FILE)) ? '' : '<div class="card"><h3>📱 Android App</h3><p>Install the WhatsApp Bot app on your phone. It can also save community members to your contacts when you allow Contacts permission.</p><a href="/client/download-apk" style="display:block;text-align:center;padding:12px;background:#00a884;color:#06281f;border-radius:7px;font-weight:600">Download Android App (APK)</a><small>After downloading, open the file and allow installing from this browser if Android asks.</small></div>';
+
     res.send(layout('Dashboard', `
       <h2>Your Bot</h2>
       <div class="card" style="display:flex;gap:10px;flex-wrap:wrap"><a href="/client/dashboard" style="padding:9px 14px;background:#00a884;color:white;border-radius:7px">Dashboard</a><a href="/client/vpn" style="padding:9px 14px;background:#263442;color:white;border-radius:7px">VPN</a></div>
       <div class="card"><h3>Group Member Invitations</h3><p>Choose a source group and destination group to invite members who have agreed to receive an invitation.</p><a href="/client/group-invites"><button type="button">Open Group Invitations</button></a></div>
+      ${apkCard}
       <div class="card"><h3>📨 Contact Messaging</h3><p>Automatically load people you have messaged from your connected WhatsApp account, then search and select recipients.</p><a href="/client/contact-messaging"><button type="button">Open Contact Messaging</button></a></div>
       <div class="card">
         <h3>👥 Automatic Community Contact Sync</h3>
